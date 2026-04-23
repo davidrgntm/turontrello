@@ -1,0 +1,14 @@
+{
+  "name": "turontrello",
+  "version": "1.0.0",
+  "description": "TuronTrello task board app",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}
