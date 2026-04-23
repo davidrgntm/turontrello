@@ -1556,6 +1556,56 @@ function renderBoard() {
     render();
   });
 
+  document.querySelectorAll('[data-open-list-editor]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const listId = btn.dataset.openListEditor;
+      state.ui.listEditorOpenById[listId] = !state.ui.listEditorOpenById[listId];
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-cancel-list-editor]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.ui.listEditorOpenById[btn.dataset.cancelListEditor] = false;
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-list-editor-form]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const listId = form.dataset.listEditorForm;
+      const data = new FormData(form);
+      const name = String(data.get('name') || '').trim();
+      const ownerUserId = String(data.get('ownerUserId') || '').trim();
+      if (!name) return;
+      try {
+        state.board = await api(`/api/lists/${listId}`, { method: 'PATCH', body: { name, ownerUserId } });
+        state.ui.listEditorOpenById[listId] = false;
+        render();
+        showToast(t('listUpdated'));
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-delete-list]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const listId = btn.dataset.deleteList;
+      if (!confirm(`${t('deleteList')}?`)) return;
+      try {
+        state.board = await api(`/api/lists/${listId}`, { method: 'DELETE' });
+        delete state.ui.listEditorOpenById[listId];
+        render();
+        showToast(t('deletedSuccess'));
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
+
+
   document.querySelectorAll('[data-open-card-form]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.ui.cardComposerOpenByList[btn.dataset.openCardForm] = true;
