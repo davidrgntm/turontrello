@@ -435,7 +435,9 @@ Object.assign(messages.uz, {
   theme: "Tema",
   themeLight: "Yorqin",
   themeDark: "Qorong'u",
-  listColor: "List rangi"
+  listColor: "List rangi",
+  confirmListColor: "List rangini hamma foydalanuvchilarga ko‘rinadigan qilib saqlaysizmi?",
+  listColorUpdated: "List rangi hammaga saqlandi"
 });
 Object.assign(messages.ru, {
   profile: "Профиль",
@@ -486,7 +488,9 @@ Object.assign(messages.ru, {
   theme: "Тема",
   themeLight: "Светлая",
   themeDark: "Тёмная",
-  listColor: "Цвет list"
+  listColor: "Цвет list",
+  confirmListColor: "Сохранить цвет list так, чтобы он был виден всем участникам?",
+  listColorUpdated: "Цвет list сохранён для всех"
 });
 Object.assign(messages.en, {
   profile: "Profile",
@@ -537,7 +541,9 @@ Object.assign(messages.en, {
   theme: "Theme",
   themeLight: "Light",
   themeDark: "Dark",
-  listColor: "List color"
+  listColor: "List color",
+  confirmListColor: "Save this list color so every participant can see it?",
+  listColorUpdated: "List color saved for everyone"
 });
 
 const state = {
@@ -557,6 +563,7 @@ const state = {
   theme: localStorage.getItem('turontrello_theme') || 'dark',
   sse: null,
   refreshTimer: null,
+  suppressRefreshUntil: 0,
   listColorSaveTimers: {},
   drag: {
     type: null,
@@ -599,20 +606,12 @@ function themeButtonLabel() {
   return state.theme === 'light' ? `☾ ${t('themeDark')}` : `☀ ${t('themeLight')}`;
 }
 
-function listColorsStorageKey() {
-  return `turontrello_list_colors_${state.user?.id || 'guest'}_${state.boardId || 'global'}`;
-}
-
-function readLocalListColors() {
-  try {
-    return JSON.parse(localStorage.getItem(listColorsStorageKey()) || '{}') || {};
-  } catch {
-    return {};
-  }
-}
-
 function getListColors() {
-  return { ...(state.board?.userListColors || {}), ...readLocalListColors() };
+  const colors = { ...(state.board?.listColors || {}), ...(state.board?.userListColors || {}) };
+  (state.board?.lists || []).forEach((list) => {
+    if (list.color) colors[list.id] = list.color;
+  });
+  return colors;
 }
 
 function getListColor(listId) {
@@ -620,14 +619,19 @@ function getListColor(listId) {
 }
 
 function setListColor(listId, color) {
-  const colors = readLocalListColors();
-  if (color) colors[listId] = color;
-  else delete colors[listId];
-  localStorage.setItem(listColorsStorageKey(), JSON.stringify(colors));
   if (!state.board) return;
+  state.board.listColors = state.board.listColors || {};
   state.board.userListColors = state.board.userListColors || {};
-  if (color) state.board.userListColors[listId] = color;
-  else delete state.board.userListColors[listId];
+  const list = state.board.lists?.find((item) => item.id === listId);
+  if (color) {
+    state.board.listColors[listId] = color;
+    state.board.userListColors[listId] = color;
+    if (list) list.color = color;
+  } else {
+    delete state.board.listColors[listId];
+    delete state.board.userListColors[listId];
+    if (list) list.color = '';
+  }
 }
 
 function normalizeHexColor(color) {
@@ -640,20 +644,25 @@ function applyListColorToColumn(listId, color) {
   if (column && color) column.style.setProperty('--list-accent', color);
 }
 
-function persistListColor(listId, color) {
+async function persistListColor(listId, color) {
   const normalized = normalizeHexColor(color);
+  if (!listId || !normalized) return;
   setListColor(listId, normalized);
   applyListColorToColumn(listId, normalized);
-  clearTimeout(state.listColorSaveTimers[listId]);
-  state.listColorSaveTimers[listId] = setTimeout(async () => {
-    try {
-      const response = await api(`/api/lists/${listId}/color`, { method: 'PATCH', body: { color: normalized } });
-      if (state.board) state.board.userListColors = response.userListColors || state.board.userListColors || {};
-    } catch (error) {
-      showToast(error.message);
+  try {
+    const response = await api(`/api/lists/${listId}/color`, { method: 'PATCH', body: { color: normalized } });
+    if (state.board) {
+      state.board.listColors = response.listColors || response.userListColors || state.board.listColors || {};
+      state.board.userListColors = state.board.listColors;
+      const list = state.board.lists?.find((item) => item.id === listId);
+      if (list) list.color = normalized;
     }
-  }, 250);
+    showToast(t('listColorUpdated'));
+  } catch (error) {
+    showToast(error.message);
+  }
 }
+
 
 function defaultListAccent(index) {
   const palette = ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2'];
@@ -677,15 +686,61 @@ function showToast(message) {
   setTimeout(() => node.remove(), 2800);
 }
 
+function markLocalMutation(duration = 1600) {
+  state.suppressRefreshUntil = Math.max(state.suppressRefreshUntil || 0, Date.now() + duration);
+}
+
+function currentRouteKey() {
+  const route = currentRoute();
+  return `${route.name}:${route.boardId || state.boardId || ''}`;
+}
+
+function captureScrollSnapshot() {
+  const route = currentRoute();
+  const boardEl = document.querySelector('.board-workspace');
+  if (!boardEl || route.name !== 'board') return null;
+  const listTops = {};
+  document.querySelectorAll('[data-card-dropzone]').forEach((node) => {
+    listTops[node.dataset.cardDropzone] = node.scrollTop;
+  });
+  const modalCard = document.querySelector('.modal-card');
+  return {
+    routeKey: currentRouteKey(),
+    windowX: window.scrollX,
+    windowY: window.scrollY,
+    listsLeft: document.getElementById('lists-wrap')?.scrollLeft || 0,
+    listTops,
+    modalTop: modalCard?.scrollTop || 0
+  };
+}
+
+function restoreScrollSnapshot(snapshot) {
+  if (!snapshot || snapshot.routeKey !== currentRouteKey()) return;
+  requestAnimationFrame(() => {
+    const listsWrap = document.getElementById('lists-wrap');
+    if (listsWrap) listsWrap.scrollLeft = snapshot.listsLeft || 0;
+    Object.entries(snapshot.listTops || {}).forEach(([listId, top]) => {
+      const node = document.querySelector(`[data-card-dropzone="${CSS.escape(listId)}"]`);
+      if (node) node.scrollTop = top;
+    });
+    const modalCard = document.querySelector('.modal-card');
+    if (modalCard) modalCard.scrollTop = snapshot.modalTop || 0;
+    window.scrollTo(snapshot.windowX || 0, snapshot.windowY || 0);
+  });
+}
+
 async function api(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  if (method !== 'GET') markLocalMutation();
   const config = {
-    method: options.method || 'GET',
+    method,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     credentials: 'same-origin'
   };
   if (options.body !== undefined) config.body = JSON.stringify(options.body);
   const response = await fetch(path, config);
   const data = await response.json().catch(() => ({}));
+  if (method !== 'GET') markLocalMutation();
   if (!response.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
@@ -1029,9 +1084,11 @@ function connectBoardEvents() {
 }
 
 function queueRefresh() {
+  if (Date.now() < (state.suppressRefreshUntil || 0)) return;
   clearTimeout(state.refreshTimer);
   captureDraftsFromDom();
   state.refreshTimer = setTimeout(async () => {
+    if (Date.now() < (state.suppressRefreshUntil || 0)) return;
     if (isEditingCardForm()) {
       queueRefresh();
       return;
@@ -1567,7 +1624,6 @@ function renderCardCard(card) {
     <div class="kanban-card ${card.isCompleted ? 'completed' : ''} ${canManage ? '' : 'card-readonly'}" draggable="${canManage ? 'true' : 'false'}" data-card-id="${card.id}" data-open-card="${card.id}" data-card-search="${escapeHtml(`${card.title} ${card.description || ''} ${(card.labels || []).join(' ')}`.toLowerCase())}" data-card-labels="${escapeHtml((card.labels || []).join(' ').toLowerCase())}" data-card-assignee="${escapeHtml(card.assigneeUserId || '')}" data-card-status="${card.isCompleted ? 'done' : 'open'}">
       <div class="spread card-heading">
         <div class="card-title ${card.isCompleted ? 'is-done' : ''}">${escapeHtml(card.title)}</div>
-        <button type="button" class="card-check ${card.isCompleted ? 'done' : ''}" data-toggle-complete="${card.id}" title="${t('completed')}" ${canManage ? '' : 'disabled'}>${card.isCompleted ? '✓' : ''}</button>
       </div>
       ${(card.labels || []).length ? `<div class="card-meta">${card.labels.map((label, index) => `<span class="badge label-badge palette-${index % 6}">${escapeHtml(label)}</span>`).join('')}</div>` : ''}
       <div class="card-meta">
@@ -1575,6 +1631,7 @@ function renderCardCard(card) {
         ${assignee ? `<span class="badge">${escapeHtml(assignee.name)}</span>` : ''}
         ${!canManage ? `<span class="badge">${t('yourListOnly')}</span>` : ''}
         ${card.isCompleted ? `<span class="badge status-done">${t('done')}</span>` : `<span class="badge status-open">${t('statusOpen')}</span>`}
+        <button type="button" class="badge card-check-chip ${card.isCompleted ? 'done' : ''}" data-toggle-complete="${card.id}" title="${t('completed')}" ${canManage ? '' : 'disabled'}>${card.isCompleted ? '✓' : '○'}</button>
       </div>
     </div>
   `;
@@ -1770,21 +1827,26 @@ function renderBoard() {
   });
 
   document.querySelectorAll('[data-list-color]').forEach((input) => {
-    const updateColor = () => {
-      const listId = input.dataset.listColor;
-      const color = normalizeHexColor(input.value);
-      if (!listId || !color) return;
-      persistListColor(listId, color);
-    };
+    const listId = input.dataset.listColor;
+    const originalColor = getListColor(listId) || input.value;
+    input.dataset.previousColor = originalColor;
     input.addEventListener('input', () => {
-      const listId = input.dataset.listColor;
       const color = normalizeHexColor(input.value);
       if (!listId || !color) return;
-      setListColor(listId, color);
       applyListColorToColumn(listId, color);
     });
-    input.addEventListener('change', updateColor);
-    input.addEventListener('blur', updateColor);
+    input.addEventListener('change', async () => {
+      const color = normalizeHexColor(input.value);
+      const previous = normalizeHexColor(input.dataset.previousColor || originalColor) || originalColor;
+      if (!listId || !color) return;
+      if (!confirm(t('confirmListColor'))) {
+        input.value = previous;
+        applyListColorToColumn(listId, previous);
+        return;
+      }
+      input.dataset.previousColor = color;
+      await persistListColor(listId, color);
+    });
   });
 
   document.querySelectorAll('[data-open-list-editor]').forEach((btn) => {
@@ -2319,6 +2381,7 @@ function fileToBase64(file) {
 }
 
 function render() {
+  const scrollSnapshot = captureScrollSnapshot();
   captureDraftsFromDom();
 
   if (!state.user) {
@@ -2334,6 +2397,7 @@ function render() {
   else if (route.name === 'profile') renderProfile();
   else renderDashboard();
   renderModal();
+  restoreScrollSnapshot(scrollSnapshot);
 }
 
 async function handleRouteChange() {

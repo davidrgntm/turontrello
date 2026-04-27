@@ -1116,3 +1116,65 @@ html[data-theme="light"] .due-chip { font-weight: 700; }
     text-overflow: ellipsis;
   }
 }
+
+/* v3: card completion chip like status/date badge */
+.card-check-chip {
+  cursor: pointer;
+  min-width: 34px;
+  height: auto;
+  padding: 4px 10px;
+  border-radius: 99px;
+  line-height: 1.1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #bfdbfe;
+  background: rgba(37, 99, 235, 0.16);
+  border-color: rgba(59, 130, 246, 0.30);
+}
+.card-check-chip:hover {
+  background: rgba(37, 99, 235, 0.24);
+  border-color: rgba(59, 130, 246, 0.55);
+}
+.card-check-chip.done {
+  color: #6ee7b7;
+  background: var(--success-soft);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+.card-check-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+html[data-theme="light"] .card-check-chip {
+  color: #fff;
+  background: #2563eb;
+  border-color: #1d4ed8;
+  font-weight: 700;
+}
+html[data-theme="light"] .card-check-chip.done {
+  color: #fff;
+  background: #059669;
+  border-color: #047857;
+}
+
+/* v3: stronger list color background */
+.list-column {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--list-accent, var(--accent)) 24%, transparent) 0%, color-mix(in srgb, var(--list-accent, var(--accent)) 10%, transparent) 48%, var(--surface-raised) 100%);
+}
+.list-header {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--list-accent, var(--accent)) 34%, transparent), transparent 76%);
+}
+.list-body {
+  background: color-mix(in srgb, var(--list-accent, var(--accent)) 8%, transparent);
+}
+html[data-theme="light"] .list-column {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--list-accent, var(--accent)) 24%, #ffffff) 0%, color-mix(in srgb, var(--list-accent, var(--accent)) 13%, #ffffff) 48%, color-mix(in srgb, var(--list-accent, var(--accent)) 7%, #ffffff) 100%);
+}
+html[data-theme="light"] .list-header {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--list-accent, var(--accent)) 25%, #ffffff), rgba(255,255,255,0.70));
+}
+html[data-theme="light"] .list-body {
+  background: color-mix(in srgb, var(--list-accent, var(--accent)) 9%, #ffffff);
+}
