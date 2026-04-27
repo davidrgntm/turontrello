@@ -547,7 +547,8 @@ const state = {
     listOwnerUserId: '',
     listEditorOpenById: {},
     cardComposerOpenByList: {},
-    cardDraftsByList: {}
+    cardDraftsByList: {},
+    cardDetailDraft: null
   }
 };
 
@@ -818,6 +819,54 @@ function toLocalDateInput(value) {
   return toTashkentDateInput(value);
 }
 
+function captureInlineDraftsFromDom() {
+  document.querySelectorAll('[data-card-form]').forEach((form) => {
+    const listId = form.dataset.cardForm;
+    const field = form.querySelector('textarea[name="title"]');
+    if (listId && field) state.ui.cardDraftsByList[listId] = field.value;
+  });
+
+  const listForm = document.getElementById('list-form');
+  if (listForm) {
+    state.ui.listName = listForm.querySelector('input[name="name"]')?.value || state.ui.listName;
+    state.ui.listOwnerUserId = listForm.querySelector('select[name="ownerUserId"]')?.value || state.ui.listOwnerUserId;
+  }
+}
+
+function captureCardDetailDraftFromDom() {
+  if (!state.cardDetail?.card?.id) return;
+  const form = document.getElementById('card-form');
+  if (!form) return;
+
+  const formData = new FormData(form);
+  state.ui.cardDetailDraft = {
+    cardId: state.cardDetail.card.id,
+    title: String(formData.get('title') || ''),
+    description: String(formData.get('description') || ''),
+    labels: String(formData.get('labels') || ''),
+    listId: String(formData.get('listId') || ''),
+    assigneeUserId: String(formData.get('assigneeUserId') || ''),
+    startDate: String(formData.get('startDate') || ''),
+    dueDate: String(formData.get('dueDate') || ''),
+    isCompleted: formData.get('isCompleted') === 'on'
+  };
+}
+
+function captureDraftsFromDom() {
+  captureInlineDraftsFromDom();
+  captureCardDetailDraftFromDom();
+}
+
+function clearCardDetailDraft(cardId) {
+  if (!cardId || state.ui.cardDetailDraft?.cardId === cardId) state.ui.cardDetailDraft = null;
+}
+
+function isEditingCardForm() {
+  const active = document.activeElement;
+  if (!active || !active.matches('input, textarea, select')) return false;
+  return Boolean(active.closest('[data-card-form], #card-form, #comment-form, #checklist-add-form, #link-attachment-form, #file-attachment-form'));
+}
+
 function connectBoardEvents() {
   if (state.sse) state.sse.close();
   if (!state.boardId) return;
@@ -836,8 +885,15 @@ function connectBoardEvents() {
 
 function queueRefresh() {
   clearTimeout(state.refreshTimer);
+  captureDraftsFromDom();
   state.refreshTimer = setTimeout(async () => {
+    if (isEditingCardForm()) {
+      queueRefresh();
+      return;
+    }
+
     try {
+      captureDraftsFromDom();
       if (state.boardId) {
         const currentCardId = state.cardDetail?.card?.id;
         await loadBoard(state.boardId, false);
@@ -845,6 +901,7 @@ function queueRefresh() {
           try {
             state.cardDetail = await api(`/api/cards/${currentCardId}`);
           } catch {
+            clearCardDetailDraft(currentCardId);
             state.cardDetail = null;
           }
         }
@@ -855,7 +912,7 @@ function queueRefresh() {
     } catch {
       // ignore transient refresh errors
     }
-  }, 250);
+  }, 600);
 }
 
 async function refreshDashboard() {
@@ -883,11 +940,13 @@ async function loadBoard(boardId, rerender = true) {
 }
 
 async function openCard(cardId) {
+  clearCardDetailDraft();
   state.cardDetail = await api(`/api/cards/${cardId}`);
   renderModal();
 }
 
 function closeCardModal() {
+  clearCardDetailDraft(state.cardDetail?.card?.id);
   state.cardDetail = null;
   renderModal();
 }
@@ -1621,6 +1680,12 @@ function renderBoard() {
   });
 
   document.querySelectorAll('[data-card-form]').forEach((form) => {
+    form.addEventListener('input', () => {
+      const listId = form.dataset.cardForm;
+      const titleField = form.querySelector('textarea[name="title"]');
+      if (listId && titleField) state.ui.cardDraftsByList[listId] = titleField.value;
+    });
+
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const listId = form.dataset.cardForm;
@@ -1769,6 +1834,15 @@ function renderModal() {
   const canEdit = canManageCardUi(card);
   const editableLists = state.board.lists.filter((list) => canManageListUi(list));
   const availableLists = canEdit ? editableLists : state.board.lists;
+  const draft = state.ui.cardDetailDraft?.cardId === card.id ? state.ui.cardDetailDraft : null;
+  const draftTitle = draft ? draft.title : card.title;
+  const draftDescription = draft ? draft.description : (card.description || '');
+  const draftLabels = draft ? draft.labels : (card.labels || []).join(', ');
+  const draftListId = draft ? draft.listId : card.listId;
+  const draftAssigneeUserId = draft ? draft.assigneeUserId : (card.assigneeUserId || '');
+  const draftStartDate = draft ? draft.startDate : toLocalDateInput(card.startDate);
+  const draftDueDate = draft ? draft.dueDate : toLocalDateInput(card.dueDate);
+  const draftIsCompleted = draft ? draft.isCompleted : card.isCompleted;
 
   modalRoot.innerHTML = `
     <div class="modal-backdrop" id="modal-backdrop">
@@ -1786,28 +1860,28 @@ function renderModal() {
         <div class="modal-body">
           <div class="modal-section">
             <form id="card-form" class="form-stack">
-              <label>${t('cardTitle')}<input name="title" value="${escapeHtml(card.title)}" ${canEdit ? '' : 'disabled'} required /></label>
-              <label>${t('description')}<textarea name="description" ${canEdit ? '' : 'disabled'}>${escapeHtml(card.description || '')}</textarea></label>
+              <label>${t('cardTitle')}<input name="title" value="${escapeHtml(draftTitle)}" ${canEdit ? '' : 'disabled'} required /></label>
+              <label>${t('description')}<textarea name="description" ${canEdit ? '' : 'disabled'}>${escapeHtml(draftDescription)}</textarea></label>
               <div class="grid-2">
-                <label>${t('labels')}<input name="labels" value="${escapeHtml((card.labels || []).join(', '))}" placeholder="${t('labelsHint')}" ${canEdit ? '' : 'disabled'} /></label>
+                <label>${t('labels')}<input name="labels" value="${escapeHtml(draftLabels)}" placeholder="${t('labelsHint')}" ${canEdit ? '' : 'disabled'} /></label>
                 <label>${t('assignee')}
                   <select name="assigneeUserId" ${canEdit ? '' : 'disabled'}>
                     <option value="">${t('unassigned')}</option>
-                    ${members.map((member) => `<option value="${member.id}" ${card.assigneeUserId === member.id ? 'selected' : ''}>${escapeHtml(member.name)}</option>`).join('')}
+                    ${members.map((member) => `<option value="${member.id}" ${draftAssigneeUserId === member.id ? 'selected' : ''}>${escapeHtml(member.name)}</option>`).join('')}
                   </select>
                 </label>
               </div>
               <div class="grid-2">
-                <label>${t('startDate')}<input type="datetime-local" name="startDate" value="${toLocalDateInput(card.startDate)}" ${canEdit ? '' : 'disabled'} /></label>
-                <label>${t('dueDate')}<input type="datetime-local" name="dueDate" value="${toLocalDateInput(card.dueDate)}" ${canEdit ? '' : 'disabled'} /></label>
+                <label>${t('startDate')}<input type="datetime-local" name="startDate" value="${escapeHtml(draftStartDate)}" ${canEdit ? '' : 'disabled'} /></label>
+                <label>${t('dueDate')}<input type="datetime-local" name="dueDate" value="${escapeHtml(draftDueDate)}" ${canEdit ? '' : 'disabled'} /></label>
               </div>
               <div class="grid-2">
                 <label>${t('list')}
                   <select name="listId" ${canEdit ? '' : 'disabled'}>
-                    ${availableLists.map((list) => `<option value="${list.id}" ${card.listId === list.id ? 'selected' : ''}>${escapeHtml(getDisplayListName(list.name))}</option>`).join('')}
+                    ${availableLists.map((list) => `<option value="${list.id}" ${draftListId === list.id ? 'selected' : ''}>${escapeHtml(getDisplayListName(list.name))}</option>`).join('')}
                   </select>
                 </label>
-                <label class="checkbox-line"><input type="checkbox" name="isCompleted" ${card.isCompleted ? 'checked' : ''} ${canEdit ? '' : 'disabled'} /> ${t('completed')}</label>
+                <label class="checkbox-line"><input type="checkbox" name="isCompleted" ${draftIsCompleted ? 'checked' : ''} ${canEdit ? '' : 'disabled'} /> ${t('completed')}</label>
               </div>
               ${canEdit ? `<button class="primary" type="submit">${t('saveCard')}</button>` : `<div class="helper">${t('yourListOnly')}</div>`}
             </form>
@@ -1916,6 +1990,9 @@ function renderModal() {
 
   const cardForm = document.getElementById('card-form');
   if (canEdit && cardForm) {
+    cardForm.addEventListener('input', captureCardDetailDraftFromDom);
+    cardForm.addEventListener('change', captureCardDetailDraftFromDom);
+
     cardForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
@@ -1923,6 +2000,7 @@ function renderModal() {
       payload.isCompleted = form.get('isCompleted') === 'on';
       try {
         state.cardDetail = await api(`/api/cards/${card.id}`, { method: 'PATCH', body: payload });
+        clearCardDetailDraft(card.id);
         await loadBoard(state.boardId, false);
         render();
         renderModal();
@@ -2069,6 +2147,8 @@ function fileToBase64(file) {
 }
 
 function render() {
+  captureDraftsFromDom();
+
   if (!state.user) {
     renderAuth();
     renderModal();
@@ -2146,7 +2226,7 @@ async function boot() {
 
 window.addEventListener('hashchange', handleRouteChange);
 setInterval(() => {
-  if (state.boardId) render();
+  if (state.boardId && !isEditingCardForm()) render();
 }, 60000);
 
 boot();
