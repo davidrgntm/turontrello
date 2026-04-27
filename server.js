@@ -198,6 +198,7 @@ function ensureColumn(table, columnName, columnSql) {
 ensureColumn('cards', 'is_completed', 'is_completed INTEGER NOT NULL DEFAULT 0');
 ensureColumn('users', 'avatar_data', "avatar_data TEXT NOT NULL DEFAULT ''");
 ensureColumn('lists', 'owner_user_id', 'owner_user_id TEXT');
+ensureColumn('lists', 'color', "color TEXT NOT NULL DEFAULT ''");
 
 const palette = ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2', '#4f46e5', '#b91c1c'];
 const sseClients = new Set();
@@ -490,6 +491,7 @@ function serializeList(list) {
     position: list.position,
     ownerUserId: list.owner_user_id || null,
     owner: list.owner_name ? { id: list.owner_user_id, name: list.owner_name, avatarColor: list.owner_avatar_color, avatarData: list.owner_avatar_data || '' } : null,
+    color: list.color || '',
     createdAt: list.created_at,
     updatedAt: list.updated_at
   };
@@ -576,11 +578,8 @@ function getBoardPayload(boardId, currentUserId = null) {
     actor: row.actor_name ? { id: row.actor_user_id, name: row.actor_name, email: row.actor_email, avatarColor: row.actor_avatar_color, avatarData: row.actor_avatar_data || '' } : null
   }));
 
-  const userListColors = currentUserId ? Object.fromEntries(db.prepare(`
-    SELECT list_id, color
-    FROM user_list_colors
-    WHERE user_id = ? AND board_id = ?
-  `).all(currentUserId, boardId).map((row) => [row.list_id, row.color])) : {};
+  const listColors = Object.fromEntries(lists.filter((list) => list.color).map((list) => [list.id, list.color]));
+  const userListColors = listColors;
 
   let permissions = null;
   if (currentUserId) {
@@ -604,6 +603,7 @@ function getBoardPayload(boardId, currentUserId = null) {
     members,
     activity,
     permissions,
+    listColors,
     userListColors
   };
 }
@@ -1053,24 +1053,17 @@ async function handleApi(req, res, pathname, query) {
       return sendJson(res, 400, { error: 'Invalid list color' });
     }
 
-    if (color) {
-      db.prepare(`
-        INSERT INTO user_list_colors (user_id, board_id, list_id, color, updated_at)
-        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(user_id, board_id, list_id)
-        DO UPDATE SET color = excluded.color, updated_at = CURRENT_TIMESTAMP
-      `).run(current.user.id, list.board_id, listId, color);
-    } else {
-      db.prepare(`DELETE FROM user_list_colors WHERE user_id = ? AND board_id = ? AND list_id = ?`).run(current.user.id, list.board_id, listId);
-    }
+    db.prepare(`UPDATE lists SET color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(color, listId);
+    logActivity({ workspaceId: check.workspace.id, boardId: list.board_id, actorUserId: current.user.id, actionType: 'list.color_updated', details: { listId, color } });
+    broadcast({ type: 'board.updated', workspaceId: check.workspace.id, boardId: list.board_id, userId: current.user.id });
 
-    const userListColors = Object.fromEntries(db.prepare(`
-      SELECT list_id, color
-      FROM user_list_colors
-      WHERE user_id = ? AND board_id = ?
-    `).all(current.user.id, list.board_id).map((row) => [row.list_id, row.color]));
+    const listColors = Object.fromEntries(db.prepare(`
+      SELECT id, color
+      FROM lists
+      WHERE board_id = ? AND color != ''
+    `).all(list.board_id).map((row) => [row.id, row.color]));
 
-    return sendJson(res, 200, { ok: true, color, userListColors });
+    return sendJson(res, 200, { ok: true, color, listColors, userListColors: listColors });
   }
 
   const listMatch = pathname.match(/^\/api\/lists\/([^/]+)$/);
