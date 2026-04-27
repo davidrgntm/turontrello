@@ -427,7 +427,15 @@ Object.assign(messages.uz, {
   listEditor: "Listni tahrirlash",
   deleteList: "Listni o'chirish",
   confirmDeleteList: "Rostdan ham shu listni o'chirmoqchimisiz?",
-  listUpdated: "List yangilandi"
+  listUpdated: "List yangilandi",
+  cardStatus: "Card statusi",
+  statusAll: "Barcha statuslar",
+  statusOpen: "Jarayonda",
+  statusDone: "Tayyor",
+  theme: "Tema",
+  themeLight: "Yorqin",
+  themeDark: "Qorong'u",
+  listColor: "List rangi"
 });
 Object.assign(messages.ru, {
   profile: "Профиль",
@@ -470,7 +478,15 @@ Object.assign(messages.ru, {
   listEditor: "Редактировать list",
   deleteList: "Удалить list",
   confirmDeleteList: "Точно удалить этот list?",
-  listUpdated: "List обновлён"
+  listUpdated: "List обновлён",
+  cardStatus: "Статус card",
+  statusAll: "Все статусы",
+  statusOpen: "В работе",
+  statusDone: "Готово",
+  theme: "Тема",
+  themeLight: "Светлая",
+  themeDark: "Тёмная",
+  listColor: "Цвет list"
 });
 Object.assign(messages.en, {
   profile: "Profile",
@@ -513,7 +529,15 @@ Object.assign(messages.en, {
   listEditor: "Edit list",
   deleteList: "Delete list",
   confirmDeleteList: "Are you sure you want to delete this list?",
-  listUpdated: "List updated"
+  listUpdated: "List updated",
+  cardStatus: "Card status",
+  statusAll: "All statuses",
+  statusOpen: "Open",
+  statusDone: "Done",
+  theme: "Theme",
+  themeLight: "Light",
+  themeDark: "Dark",
+  listColor: "List color"
 });
 
 const state = {
@@ -526,9 +550,11 @@ const state = {
   filters: {
     search: '',
     label: '',
-    assignee: ''
+    assignee: '',
+    status: ''
   },
   lang: localStorage.getItem('turontrello_lang') || 'uz',
+  theme: localStorage.getItem('turontrello_theme') || 'dark',
   sse: null,
   refreshTimer: null,
   drag: {
@@ -553,12 +579,51 @@ const state = {
 };
 
 document.documentElement.lang = state.lang;
+applyTheme();
 
 const APP_TIME_ZONE = 'Asia/Tashkent';
 const APP_TIME_ZONE_OFFSET = '+05:00';
 
 function t(key) {
   return messages[state.lang]?.[key] || messages.en[key] || key;
+}
+
+function applyTheme() {
+  const theme = state.theme === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = theme;
+  localStorage.setItem('turontrello_theme', theme);
+}
+
+function themeButtonLabel() {
+  return state.theme === 'light' ? `☾ ${t('themeDark')}` : `☀ ${t('themeLight')}`;
+}
+
+function listColorsStorageKey() {
+  return `turontrello_list_colors_${state.user?.id || 'guest'}_${state.boardId || 'global'}`;
+}
+
+function getListColors() {
+  try {
+    return JSON.parse(localStorage.getItem(listColorsStorageKey()) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+
+function getListColor(listId) {
+  return getListColors()[listId] || '';
+}
+
+function setListColor(listId, color) {
+  const colors = getListColors();
+  if (color) colors[listId] = color;
+  else delete colors[listId];
+  localStorage.setItem(listColorsStorageKey(), JSON.stringify(colors));
+}
+
+function defaultListAccent(index) {
+  const palette = ['#2563eb', '#7c3aed', '#db2777', '#ea580c', '#16a34a', '#0891b2'];
+  return palette[index % palette.length];
 }
 
 function escapeHtml(value) {
@@ -670,6 +735,7 @@ function bindLanguageBar() {
       state.lang = btn.dataset.lang;
       localStorage.setItem('turontrello_lang', state.lang);
       document.documentElement.lang = state.lang;
+applyTheme();
 
 const APP_TIME_ZONE = 'Asia/Tashkent';
 const APP_TIME_ZONE_OFFSET = '+05:00';
@@ -682,10 +748,11 @@ function renderTopbar(title, rightHtml = '') {
   return `
     <div class="topbar">
       <div class="brand">
-        <div class="brand-badge">TT</div>
-        <div>${escapeHtml(title)}</div>
+        <img class="brand-logo" src="/turontrello-logo.png" alt="TuronTrello" />
+        <div class="brand-title">${escapeHtml(title)}</div>
       </div>
-      <div class="row wrap-row">
+      <div class="row wrap-row topbar-actions">
+        <button id="theme-toggle" class="ghost small theme-toggle" type="button" title="${t('theme')}">${themeButtonLabel()}</button>
         ${state.user ? `<button id="go-profile" class="ghost small">${t('openProfile')}</button>` : ''}
         ${state.user ? `<div class="member-pill">${renderAvatar(state.user)}<div>${escapeHtml(state.user.name)}</div></div>` : ''}
         ${rightHtml}
@@ -703,6 +770,16 @@ function renderAvatar(user, extraClass = '') {
 }
 
 function bindTopbarCommonActions() {
+  const themeBtn = document.getElementById('theme-toggle');
+  if (themeBtn) {
+    themeBtn.addEventListener('click', () => {
+      captureDraftsFromDom();
+      state.theme = state.theme === 'light' ? 'dark' : 'light';
+      applyTheme();
+      render();
+    });
+  }
+
   const profileBtn = document.getElementById('go-profile');
   if (profileBtn) {
     profileBtn.addEventListener('click', () => {
@@ -805,14 +882,49 @@ function filteredCards(listId) {
       const search = state.filters.search.trim().toLowerCase();
       const label = state.filters.label.trim().toLowerCase();
       const assignee = state.filters.assignee;
+      const status = state.filters.status;
       if (search) {
         const haystack = `${card.title} ${card.description || ''} ${(card.labels || []).join(' ')}`.toLowerCase();
         if (!haystack.includes(search)) return false;
       }
       if (label && !(card.labels || []).some((entry) => entry.toLowerCase().includes(label))) return false;
       if (assignee && card.assigneeUserId !== assignee) return false;
+      if (status === 'done' && !card.isCompleted) return false;
+      if (status === 'open' && card.isCompleted) return false;
       return true;
     });
+}
+
+function applyBoardFiltersDom() {
+  const search = state.filters.search.trim().toLowerCase();
+  const label = state.filters.label.trim().toLowerCase();
+  const assignee = state.filters.assignee;
+  const status = state.filters.status;
+
+  document.querySelectorAll('.kanban-card[data-card-id]').forEach((cardNode) => {
+    const searchable = cardNode.dataset.cardSearch || '';
+    const labels = cardNode.dataset.cardLabels || '';
+    const cardAssignee = cardNode.dataset.cardAssignee || '';
+    const cardStatus = cardNode.dataset.cardStatus || 'open';
+    const matches = (!search || searchable.includes(search))
+      && (!label || labels.includes(label))
+      && (!assignee || cardAssignee === assignee)
+      && (!status || cardStatus === status);
+    cardNode.classList.toggle('hidden-by-filter', !matches);
+  });
+
+  document.querySelectorAll('[data-card-dropzone]').forEach((zone) => {
+    const column = zone.closest('.list-column');
+    const cardNodes = [...zone.querySelectorAll('.kanban-card[data-card-id]')];
+    const visibleCount = cardNodes.filter((node) => !node.classList.contains('hidden-by-filter')).length;
+    const countNode = column?.querySelector('[data-visible-count]');
+    if (countNode) countNode.textContent = String(visibleCount);
+    const emptyNode = column?.querySelector('.list-empty');
+    if (emptyNode) {
+      emptyNode.textContent = cardNodes.length ? t('noResults') : t('noCards');
+      emptyNode.classList.toggle('hidden', visibleCount > 0);
+    }
+  });
 }
 
 function toLocalDateInput(value) {
@@ -956,7 +1068,7 @@ function renderAuth() {
     <div class="center-wrap">
       <div class="auth-card compact-auth">
         <div class="auth-hero compact-auth-hero">
-          <h1>${t('appName')}</h1>
+          <img class="auth-logo" src="/turontrello-logo.png" alt="TuronTrello" />
           <p>${t('authTitle')}</p>
         </div>
         <div class="auth-panel">
@@ -1424,7 +1536,7 @@ function renderCardCard(card) {
   const due = dueInfo(card);
   const canManage = canManageCardUi(card);
   return `
-    <div class="kanban-card ${card.isCompleted ? 'completed' : ''} ${canManage ? '' : 'card-readonly'}" draggable="${canManage ? 'true' : 'false'}" data-card-id="${card.id}" data-open-card="${card.id}">
+    <div class="kanban-card ${card.isCompleted ? 'completed' : ''} ${canManage ? '' : 'card-readonly'}" draggable="${canManage ? 'true' : 'false'}" data-card-id="${card.id}" data-open-card="${card.id}" data-card-search="${escapeHtml(`${card.title} ${card.description || ''} ${(card.labels || []).join(' ')}`.toLowerCase())}" data-card-labels="${escapeHtml((card.labels || []).join(' ').toLowerCase())}" data-card-assignee="${escapeHtml(card.assigneeUserId || '')}" data-card-status="${card.isCompleted ? 'done' : 'open'}">
       <div class="spread card-heading">
         <div class="card-title ${card.isCompleted ? 'is-done' : ''}">${escapeHtml(card.title)}</div>
         <button type="button" class="card-check ${card.isCompleted ? 'done' : ''}" data-toggle-complete="${card.id}" title="${t('completed')}" ${canManage ? '' : 'disabled'}>${card.isCompleted ? '✓' : ''}</button>
@@ -1452,7 +1564,7 @@ function renderBoard() {
   app.innerHTML = `
     <div class="app-shell">
       ${renderTopbar(t('appName'), `<button id="logout-btn" class="ghost">${t('logout')}</button>`)}
-      <div class="page board-shell">
+      <div class="page board-shell board-workspace">
         <div class="board-hero" style="background:linear-gradient(135deg, ${state.board.board.color}, #111827);">
           <div class="board-topline">
             <div class="board-title-wrap">
@@ -1471,6 +1583,11 @@ function renderBoard() {
             <select id="assignee-filter">
               <option value="">${t('allMembers')}</option>
               ${state.board.members.map((member) => `<option value="${member.id}" ${state.filters.assignee === member.id ? 'selected' : ''}>${escapeHtml(member.name)}</option>`).join('')}
+            </select>
+            <select id="status-filter" title="${t('cardStatus')}">
+              <option value="" ${!state.filters.status ? 'selected' : ''}>${t('statusAll')}</option>
+              <option value="open" ${state.filters.status === 'open' ? 'selected' : ''}>${t('statusOpen')}</option>
+              <option value="done" ${state.filters.status === 'done' ? 'selected' : ''}>${t('statusDone')}</option>
             </select>
             <div class="helper align-end">${permissions.canReorderLists ? t('ownerOnlyReorder') : (permissions.canEditBoard ? t('listEditor') : t('yourListOnly'))}</div>
           </div>
@@ -1493,25 +1610,30 @@ function renderBoard() {
         <div class="board-layout single-column-board">
           <div class="board-canvas">
             <div class="lists-wrap" id="lists-wrap">
-              ${state.board.lists.map((list) => {
-                const cards = filteredCards(list.id);
+              ${state.board.lists.map((list, index) => {
+                const cards = state.board.cards.filter((card) => card.listId === list.id);
                 const canManageThisList = canManageListUi(list);
+                const listAccent = getListColor(list.id) || defaultListAccent(index);
                 return `
-                  <div class="list-column ${canManageThisList ? '' : 'list-readonly'}" data-list-id="${list.id}" draggable="${permissions.canReorderLists ? 'true' : 'false'}">
+                  <div class="list-column ${canManageThisList ? '' : 'list-readonly'}" data-list-id="${list.id}" draggable="${permissions.canReorderLists ? 'true' : 'false'}" style="--list-accent:${escapeHtml(listAccent)}">
                     <div class="list-header">
                       <div class="list-title-row">
                         <div>
                           <div class="list-title">${escapeHtml(getDisplayListName(list.name))}</div>
                           <div class="helper">${escapeHtml(list.owner?.name || '')}</div>
                         </div>
-                        <div class="row">
-                          <div class="helper">${cards.length}</div>
+                        <div class="row list-tools">
+                          <label class="list-color-control" title="${t('listColor')}">
+                            <input type="color" value="${escapeHtml(listAccent)}" data-list-color="${list.id}" />
+                          </label>
+                          <div class="helper" data-visible-count>${cards.length}</div>
                           ${permissions.canEditBoard ? `<button type="button" class="ghost small icon-btn" data-open-list-editor="${list.id}" title="${t('listEditor')}">✎</button>` : ''}
                         </div>
                       </div>
                     </div>
                     <div class="list-body" data-card-dropzone="${list.id}">
-                      ${cards.length ? cards.map(renderCardCard).join('') : `<div class="empty-state small-empty">${state.board.cards.length ? t('noResults') : t('noCards')}</div>`}
+                      ${cards.map(renderCardCard).join('')}
+                      <div class="empty-state small-empty list-empty ${cards.length ? 'hidden' : ''}">${cards.length ? t('noResults') : t('noCards')}</div>
                     </div>
                     <div class="list-footer">
                       ${state.ui.listEditorOpenById[list.id] && permissions.canEditBoard ? `
@@ -1552,6 +1674,7 @@ function renderBoard() {
   bindLanguageBar();
   bindTopbarCommonActions();
   bindBoardNav();
+  applyBoardFiltersDom();
 
   document.getElementById('logout-btn').addEventListener('click', async () => {
     await api('/api/auth/logout', { method: 'POST' });
@@ -1604,15 +1727,29 @@ function renderBoard() {
 
   document.getElementById('search-input').addEventListener('input', (event) => {
     state.filters.search = event.target.value;
-    render();
+    applyBoardFiltersDom();
   });
   document.getElementById('label-input').addEventListener('input', (event) => {
     state.filters.label = event.target.value;
-    render();
+    applyBoardFiltersDom();
   });
   document.getElementById('assignee-filter').addEventListener('change', (event) => {
     state.filters.assignee = event.target.value;
-    render();
+    applyBoardFiltersDom();
+  });
+  document.getElementById('status-filter').addEventListener('change', (event) => {
+    state.filters.status = event.target.value;
+    applyBoardFiltersDom();
+  });
+
+  document.querySelectorAll('[data-list-color]').forEach((input) => {
+    input.addEventListener('input', () => {
+      const listId = input.dataset.listColor;
+      const color = input.value;
+      setListColor(listId, color);
+      const column = input.closest('.list-column');
+      if (column) column.style.setProperty('--list-accent', color);
+    });
   });
 
   document.querySelectorAll('[data-open-list-editor]').forEach((btn) => {
