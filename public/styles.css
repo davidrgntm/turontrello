@@ -730,32 +730,43 @@ html[data-theme="light"] .topbar { background: rgba(255, 255, 255, 0.78); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* ═══ LANGUAGE BAR ═══ */
+/* ═══ LANGUAGE SWITCHER ═══ */
 .langbar {
+  position: static;
+  display: inline-flex;
+  align-items: center;
+  z-index: 40;
+  flex: 0 0 auto;
+}
+.langbar-floating {
   position: fixed;
   left: 50%;
   bottom: 16px;
   transform: translateX(-50%);
-  z-index: 40;
 }
 .langbar-inner {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 8px;
+  gap: 4px;
+  padding: 3px;
   border-radius: 99px;
-  background: rgba(10, 14, 26, 0.9);
+  background: rgba(10, 14, 26, 0.72);
   border: 1px solid var(--border);
-  box-shadow: var(--shadow-md);
-  backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(14px);
+}
+.langbar .helper {
+  display: none;
 }
 .lang-btn {
   border-radius: 99px;
-  padding: 6px 12px;
+  padding: 5px 9px;
   background: transparent;
   border: 1px solid transparent;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  min-height: 26px;
 }
 .lang-btn.active {
   background: linear-gradient(135deg, var(--accent), var(--violet));
@@ -872,7 +883,14 @@ html[data-theme="light"] .filter-bar select {
   border-color: rgba(15, 23, 42, 0.12);
 }
 html[data-theme="light"] .langbar-inner {
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.86);
+  border-color: rgba(15, 23, 42, 0.12);
+}
+html[data-theme="light"] .lang-btn {
+  color: #334155;
+}
+html[data-theme="light"] .lang-btn.active {
+  color: #ffffff;
 }
 
 /* ═══ 2026-04-27 UI compact + theme contrast fixes ═══ */
@@ -1070,4 +1088,31 @@ html[data-theme="light"] .due-chip { font-weight: 700; }
   .board-title-wrap h1 { font-size: 18px; }
   .filter-bar { grid-template-columns: 1fr 1fr; }
   .filter-bar .align-end { grid-column: 1 / -1; justify-self: start; }
+}
+
+
+/* ═══ 2026-04-27 language switcher moved to topbar ═══ */
+.topbar-actions .langbar {
+  margin-right: 2px;
+}
+.topbar-actions .langbar-inner {
+  height: 32px;
+}
+@media (max-width: 720px) {
+  .topbar-actions {
+    flex-direction: row !important;
+    align-items: center !important;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+  .topbar-actions .lang-btn {
+    padding: 5px 8px;
+    font-size: 11px;
+  }
+  .topbar-actions .member-pill div {
+    max-width: 72px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
 }

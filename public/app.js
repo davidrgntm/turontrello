@@ -750,9 +750,10 @@ function currentRoute() {
   return { name: 'dashboard' };
 }
 
-function renderLanguageBar() {
+function renderLanguageBar(mode = 'topbar') {
+  const modeClass = mode === 'floating' ? ' langbar-floating' : '';
   return `
-    <div class="langbar">
+    <div class="langbar${modeClass}">
       <div class="langbar-inner">
         <span class="helper">${t('language')}</span>
         <button class="lang-btn ${state.lang === 'uz' ? 'active' : ''}" data-lang="uz">O‘z</button>
@@ -783,6 +784,7 @@ function renderTopbar(title, rightHtml = '') {
         <div class="brand-title">${escapeHtml(title)}</div>
       </div>
       <div class="row wrap-row topbar-actions">
+        ${renderLanguageBar()}
         <button id="theme-toggle" class="ghost small theme-toggle" type="button" title="${t('theme')}">${themeButtonLabel()}</button>
         ${state.user ? `<button id="go-profile" class="ghost small">${t('openProfile')}</button>` : ''}
         ${state.user ? `<div class="member-pill">${renderAvatar(state.user)}<div>${escapeHtml(state.user.name)}</div></div>` : ''}
@@ -1116,7 +1118,7 @@ function renderAuth() {
         </div>
       </div>
     </div>
-    ${renderLanguageBar()}
+    ${renderLanguageBar('floating')}
   `;
 
   bindLanguageBar();
@@ -1201,7 +1203,6 @@ function renderDashboard() {
           `).join('') : `<div class="empty-state">${t('dashboardEmpty')}</div>`}
         </div>
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
@@ -1326,7 +1327,6 @@ function renderProfile() {
           </div>
         </div>
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
@@ -1426,7 +1426,6 @@ function renderBoardMembers() {
           ` : ''}
         </div>
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
@@ -1498,7 +1497,6 @@ function renderBoardActivity() {
           </div>
         </div>
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
@@ -1539,7 +1537,6 @@ function renderBoardSettings() {
           </div>
         ` : `<div class="empty-state">${t('noPermission')}</div>`}
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
@@ -1585,7 +1582,7 @@ function renderCardCard(card) {
 
 function renderBoard() {
   if (!state.board) {
-    app.innerHTML = `<div class="page">${t('loading')}</div>${renderLanguageBar()}`;
+    app.innerHTML = `<div class="page">${t('loading')}</div>${renderLanguageBar('floating')}`;
     bindLanguageBar();
     return;
   }
@@ -1698,7 +1695,6 @@ function renderBoard() {
           </div>
         </div>
       </div>
-      ${renderLanguageBar()}
     </div>
   `;
 
