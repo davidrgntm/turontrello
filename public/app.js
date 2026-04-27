@@ -557,6 +557,7 @@ const state = {
   theme: localStorage.getItem('turontrello_theme') || 'dark',
   sse: null,
   refreshTimer: null,
+  listColorSaveTimers: {},
   drag: {
     type: null,
     id: null,
@@ -602,7 +603,7 @@ function listColorsStorageKey() {
   return `turontrello_list_colors_${state.user?.id || 'guest'}_${state.boardId || 'global'}`;
 }
 
-function getListColors() {
+function readLocalListColors() {
   try {
     return JSON.parse(localStorage.getItem(listColorsStorageKey()) || '{}') || {};
   } catch {
@@ -610,15 +611,48 @@ function getListColors() {
   }
 }
 
+function getListColors() {
+  return { ...(state.board?.userListColors || {}), ...readLocalListColors() };
+}
+
 function getListColor(listId) {
   return getListColors()[listId] || '';
 }
 
 function setListColor(listId, color) {
-  const colors = getListColors();
+  const colors = readLocalListColors();
   if (color) colors[listId] = color;
   else delete colors[listId];
   localStorage.setItem(listColorsStorageKey(), JSON.stringify(colors));
+  if (!state.board) return;
+  state.board.userListColors = state.board.userListColors || {};
+  if (color) state.board.userListColors[listId] = color;
+  else delete state.board.userListColors[listId];
+}
+
+function normalizeHexColor(color) {
+  const value = String(color || '').trim();
+  return /^#[0-9a-fA-F]{6}$/.test(value) ? value : '';
+}
+
+function applyListColorToColumn(listId, color) {
+  const column = document.querySelector(`.list-column[data-list-id="${CSS.escape(listId)}"]`);
+  if (column && color) column.style.setProperty('--list-accent', color);
+}
+
+function persistListColor(listId, color) {
+  const normalized = normalizeHexColor(color);
+  setListColor(listId, normalized);
+  applyListColorToColumn(listId, normalized);
+  clearTimeout(state.listColorSaveTimers[listId]);
+  state.listColorSaveTimers[listId] = setTimeout(async () => {
+    try {
+      const response = await api(`/api/lists/${listId}/color`, { method: 'PATCH', body: { color: normalized } });
+      if (state.board) state.board.userListColors = response.userListColors || state.board.userListColors || {};
+    } catch (error) {
+      showToast(error.message);
+    }
+  }, 250);
 }
 
 function defaultListAccent(index) {
@@ -735,10 +769,7 @@ function bindLanguageBar() {
       state.lang = btn.dataset.lang;
       localStorage.setItem('turontrello_lang', state.lang);
       document.documentElement.lang = state.lang;
-applyTheme();
-
-const APP_TIME_ZONE = 'Asia/Tashkent';
-const APP_TIME_ZONE_OFFSET = '+05:00';
+      applyTheme();
       render();
     });
   });
@@ -976,7 +1007,7 @@ function clearCardDetailDraft(cardId) {
 function isEditingCardForm() {
   const active = document.activeElement;
   if (!active || !active.matches('input, textarea, select')) return false;
-  return Boolean(active.closest('[data-card-form], #card-form, #comment-form, #checklist-add-form, #link-attachment-form, #file-attachment-form'));
+  return Boolean(active.closest('[data-card-form], #card-form, #comment-form, #checklist-add-form, #link-attachment-form, #file-attachment-form, .filter-bar, #list-form, [data-list-editor-form]'));
 }
 
 function connectBoardEvents() {
@@ -1546,7 +1577,7 @@ function renderCardCard(card) {
         ${due ? `<span class="badge due-chip ${due.className}" title="${escapeHtml(due.title)}">${escapeHtml(due.title)}</span>` : ''}
         ${assignee ? `<span class="badge">${escapeHtml(assignee.name)}</span>` : ''}
         ${!canManage ? `<span class="badge">${t('yourListOnly')}</span>` : ''}
-        ${card.isCompleted ? `<span class="badge status-done">${t('done')}</span>` : ''}
+        ${card.isCompleted ? `<span class="badge status-done">${t('done')}</span>` : `<span class="badge status-open">${t('statusOpen')}</span>`}
       </div>
     </div>
   `;
@@ -1743,13 +1774,21 @@ function renderBoard() {
   });
 
   document.querySelectorAll('[data-list-color]').forEach((input) => {
+    const updateColor = () => {
+      const listId = input.dataset.listColor;
+      const color = normalizeHexColor(input.value);
+      if (!listId || !color) return;
+      persistListColor(listId, color);
+    };
     input.addEventListener('input', () => {
       const listId = input.dataset.listColor;
-      const color = input.value;
+      const color = normalizeHexColor(input.value);
+      if (!listId || !color) return;
       setListColor(listId, color);
-      const column = input.closest('.list-column');
-      if (column) column.style.setProperty('--list-accent', color);
+      applyListColorToColumn(listId, color);
     });
+    input.addEventListener('change', updateColor);
+    input.addEventListener('blur', updateColor);
   });
 
   document.querySelectorAll('[data-open-list-editor]').forEach((btn) => {
