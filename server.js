@@ -90,6 +90,18 @@ CREATE TABLE IF NOT EXISTS lists (
   FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS user_list_colors (
+  user_id TEXT NOT NULL,
+  board_id TEXT NOT NULL,
+  list_id TEXT NOT NULL,
+  color TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (user_id, board_id, list_id),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (board_id) REFERENCES boards(id) ON DELETE CASCADE,
+  FOREIGN KEY (list_id) REFERENCES lists(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS cards (
   id TEXT PRIMARY KEY,
   board_id TEXT NOT NULL,
@@ -170,6 +182,7 @@ CREATE INDEX IF NOT EXISTS idx_workspace_members_user ON workspace_members(user_
 CREATE INDEX IF NOT EXISTS idx_board_members_user ON board_members(user_id);
 CREATE INDEX IF NOT EXISTS idx_boards_workspace ON boards(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_lists_board ON lists(board_id);
+CREATE INDEX IF NOT EXISTS idx_user_list_colors_user_board ON user_list_colors(user_id, board_id);
 CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(board_id);
 CREATE INDEX IF NOT EXISTS idx_cards_list ON cards(list_id);
 CREATE INDEX IF NOT EXISTS idx_activity_board ON activity_logs(board_id, created_at DESC);
@@ -563,6 +576,12 @@ function getBoardPayload(boardId, currentUserId = null) {
     actor: row.actor_name ? { id: row.actor_user_id, name: row.actor_name, email: row.actor_email, avatarColor: row.actor_avatar_color, avatarData: row.actor_avatar_data || '' } : null
   }));
 
+  const userListColors = currentUserId ? Object.fromEntries(db.prepare(`
+    SELECT list_id, color
+    FROM user_list_colors
+    WHERE user_id = ? AND board_id = ?
+  `).all(currentUserId, boardId).map((row) => [row.list_id, row.color])) : {};
+
   let permissions = null;
   if (currentUserId) {
     const membership = selectBoardMembership.get(boardId, currentUserId) || { role: 'member' };
@@ -584,7 +603,8 @@ function getBoardPayload(boardId, currentUserId = null) {
     cards,
     members,
     activity,
-    permissions
+    permissions,
+    userListColors
   };
 }
 
@@ -1017,6 +1037,40 @@ async function handleApi(req, res, pathname, query) {
     logActivity({ workspaceId: check.workspace.id, boardId, actorUserId: current.user.id, actionType: 'list.created', details: { listId, name } });
     broadcast({ type: 'board.updated', workspaceId: check.workspace.id, boardId, userId: current.user.id });
     return sendJson(res, 201, getBoardPayload(boardId, current.user.id));
+  }
+
+  const listColorMatch = pathname.match(/^\/api\/lists\/([^/]+)\/color$/);
+  if (listColorMatch && req.method === 'PATCH') {
+    const listId = listColorMatch[1];
+    const list = selectListById.get(listId);
+    if (!list) throw new Error('List not found');
+    const check = requireBoardMember(req, res, current.user.id, list.board_id);
+    if (!check) return;
+    const body = await readBody(req);
+
+    const color = sanitizeText(body.color || '');
+    if (color && !/^#[0-9a-fA-F]{6}$/.test(color)) {
+      return sendJson(res, 400, { error: 'Invalid list color' });
+    }
+
+    if (color) {
+      db.prepare(`
+        INSERT INTO user_list_colors (user_id, board_id, list_id, color, updated_at)
+        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(user_id, board_id, list_id)
+        DO UPDATE SET color = excluded.color, updated_at = CURRENT_TIMESTAMP
+      `).run(current.user.id, list.board_id, listId, color);
+    } else {
+      db.prepare(`DELETE FROM user_list_colors WHERE user_id = ? AND board_id = ? AND list_id = ?`).run(current.user.id, list.board_id, listId);
+    }
+
+    const userListColors = Object.fromEntries(db.prepare(`
+      SELECT list_id, color
+      FROM user_list_colors
+      WHERE user_id = ? AND board_id = ?
+    `).all(current.user.id, list.board_id).map((row) => [row.list_id, row.color]));
+
+    return sendJson(res, 200, { ok: true, color, userListColors });
   }
 
   const listMatch = pathname.match(/^\/api\/lists\/([^/]+)$/);
