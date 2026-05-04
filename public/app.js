@@ -692,7 +692,7 @@ function markLocalMutation(duration = 1600) {
 
 function currentRouteKey() {
   const route = currentRoute();
-  return `${route.name}:${route.boardId || state.boardId || ''}`;
+  return `${route.name}:${route.boardId || state.boardId || ''}:${route.cardNumber || ''}`;
 }
 
 function captureScrollSnapshot() {
@@ -791,16 +791,30 @@ function initials(name) {
   return String(name || '?').split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase();
 }
 
+function decodeRoutePart(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function boardCardHash(boardId, taskNumber) {
+  return `#/board/${encodeURIComponent(boardId)}/${encodeURIComponent(taskNumber)}`;
+}
+
 function currentRoute() {
   const hash = location.hash || '#/';
   const activityMatch = hash.match(/^#\/board\/([^/]+)\/activity$/);
-  if (activityMatch) return { name: 'board-activity', boardId: activityMatch[1] };
+  if (activityMatch) return { name: 'board-activity', boardId: decodeRoutePart(activityMatch[1]) };
   const membersMatch = hash.match(/^#\/board\/([^/]+)\/members$/);
-  if (membersMatch) return { name: 'board-members', boardId: membersMatch[1] };
+  if (membersMatch) return { name: 'board-members', boardId: decodeRoutePart(membersMatch[1]) };
   const settingsMatch = hash.match(/^#\/board\/([^/]+)\/settings$/);
-  if (settingsMatch) return { name: 'board-settings', boardId: settingsMatch[1] };
+  if (settingsMatch) return { name: 'board-settings', boardId: decodeRoutePart(settingsMatch[1]) };
+  const cardMatch = hash.match(/^#\/board\/([^/]+)\/([^/]+)$/);
+  if (cardMatch) return { name: 'board', boardId: decodeRoutePart(cardMatch[1]), cardNumber: decodeRoutePart(cardMatch[2]) };
   const match = hash.match(/^#\/board\/([^/]+)$/);
-  if (match) return { name: 'board', boardId: match[1] };
+  if (match) return { name: 'board', boardId: decodeRoutePart(match[1]) };
   if (hash === '#/profile') return { name: 'profile' };
   return { name: 'dashboard' };
 }
@@ -1141,15 +1155,36 @@ async function loadBoard(boardId, rerender = true) {
   if (rerender) render();
 }
 
-async function openCard(cardId) {
+async function openCard(cardId, options = {}) {
+  const updateUrl = options.updateUrl !== false;
   clearCardDetailDraft();
   state.cardDetail = await api(`/api/cards/${cardId}`);
+  const taskNumber = state.cardDetail?.card?.taskNumber;
+  if (updateUrl && state.boardId && taskNumber) {
+    const nextHash = boardCardHash(state.boardId, taskNumber);
+    if (location.hash !== nextHash) history.pushState(null, '', nextHash);
+  }
   renderModal();
 }
 
+async function openCardFromRoute(taskNumber) {
+  if (!taskNumber || !state.board?.cards) return;
+  const normalized = String(taskNumber).trim().toUpperCase();
+  const card = state.board.cards.find((item) => String(item.taskNumber || '').toUpperCase() === normalized || item.id === taskNumber);
+  if (!card) {
+    showToast(`Task ${taskNumber} topilmadi`);
+    return;
+  }
+  await openCard(card.id, { updateUrl: false });
+}
+
 function closeCardModal() {
+  const boardId = state.boardId;
   clearCardDetailDraft(state.cardDetail?.card?.id);
   state.cardDetail = null;
+  if (boardId && currentRoute().cardNumber) {
+    history.pushState(null, '', `#/board/${encodeURIComponent(boardId)}`);
+  }
   renderModal();
 }
 
@@ -1621,9 +1656,10 @@ function renderCardCard(card) {
   const due = dueInfo(card);
   const canManage = canManageCardUi(card);
   return `
-    <div class="kanban-card ${card.isCompleted ? 'completed' : ''} ${canManage ? '' : 'card-readonly'}" draggable="${canManage ? 'true' : 'false'}" data-card-id="${card.id}" data-open-card="${card.id}" data-card-search="${escapeHtml(`${card.title} ${card.description || ''} ${(card.labels || []).join(' ')}`.toLowerCase())}" data-card-labels="${escapeHtml((card.labels || []).join(' ').toLowerCase())}" data-card-assignee="${escapeHtml(card.assigneeUserId || '')}" data-card-status="${card.isCompleted ? 'done' : 'open'}">
+    <div class="kanban-card ${card.isCompleted ? 'completed' : ''} ${canManage ? '' : 'card-readonly'}" draggable="${canManage ? 'true' : 'false'}" data-card-id="${card.id}" data-open-card="${card.id}" data-open-card-number="${escapeHtml(card.taskNumber || '')}" data-card-search="${escapeHtml(`${card.title} ${card.description || ''} ${(card.labels || []).join(' ')}`.toLowerCase())}" data-card-labels="${escapeHtml((card.labels || []).join(' ').toLowerCase())}" data-card-assignee="${escapeHtml(card.assigneeUserId || '')}" data-card-status="${card.isCompleted ? 'done' : 'open'}">
       <div class="spread card-heading">
         <div class="card-title ${card.isCompleted ? 'is-done' : ''}">${escapeHtml(card.title)}</div>
+        ${card.taskNumber ? `<span class="badge task-number-badge">${escapeHtml(card.taskNumber)}</span>` : ''}
       </div>
       ${(card.labels || []).length ? `<div class="card-meta">${card.labels.map((label, index) => `<span class="badge label-badge palette-${index % 6}">${escapeHtml(label)}</span>`).join('')}</div>` : ''}
       <div class="card-meta">
@@ -1941,7 +1977,12 @@ function renderBoard() {
   document.querySelectorAll('[data-open-card]').forEach((cardNode) => {
     cardNode.addEventListener('click', async (event) => {
       if (event.target.closest('[data-toggle-complete]')) return;
-      await openCard(cardNode.dataset.openCard);
+      const taskNumber = cardNode.dataset.openCardNumber;
+      if (state.boardId && taskNumber) {
+        location.hash = boardCardHash(state.boardId, taskNumber);
+      } else {
+        await openCard(cardNode.dataset.openCard);
+      }
     });
   });
 
@@ -2084,7 +2125,10 @@ function renderModal() {
         <div class="modal-header">
           <div>
             <h2 style="margin:0 0 6px;">${escapeHtml(card.title)}</h2>
-            <div class="helper">${t('createdAt')}: ${escapeHtml(formatDate(card.createdAt))}</div>
+            <div class="row wrap-row">
+              ${card.taskNumber ? `<span class="badge task-number-badge">${escapeHtml(card.taskNumber)}</span>` : ''}
+              <div class="helper">${t('createdAt')}: ${escapeHtml(formatDate(card.createdAt))}</div>
+            </div>
           </div>
           <div class="row">
             ${canEdit ? `<button class="danger" id="delete-card-btn">${t('deleteCard')}</button>` : ''}
@@ -2410,6 +2454,7 @@ async function handleRouteChange() {
   if (['board', 'board-members', 'board-activity', 'board-settings'].includes(route.name)) {
     try {
       await loadBoard(route.boardId, false);
+      if (route.name === 'board' && route.cardNumber) await openCardFromRoute(route.cardNumber);
     } catch (error) {
       showToast(error.message);
       location.hash = '#/';
@@ -2442,6 +2487,7 @@ async function boot() {
     if (state.user && ['board', 'board-members', 'board-activity', 'board-settings'].includes(route.name)) {
       try {
         await loadBoard(route.boardId, false);
+        if (route.name === 'board' && route.cardNumber) await openCardFromRoute(route.cardNumber);
       } catch {
         location.hash = '#/';
       }
@@ -2461,6 +2507,7 @@ async function boot() {
 }
 
 window.addEventListener('hashchange', handleRouteChange);
+window.addEventListener('popstate', handleRouteChange);
 setInterval(() => {
   if (state.boardId && !isEditingCardForm()) render();
 }, 60000);
