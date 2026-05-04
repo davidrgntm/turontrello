@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS user_list_colors (
 
 CREATE TABLE IF NOT EXISTS cards (
   id TEXT PRIMARY KEY,
+  task_number TEXT NOT NULL DEFAULT '',
   board_id TEXT NOT NULL,
   list_id TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -196,6 +197,8 @@ function ensureColumn(table, columnName, columnSql) {
 }
 
 ensureColumn('cards', 'is_completed', 'is_completed INTEGER NOT NULL DEFAULT 0');
+ensureColumn('cards', 'task_number', "task_number TEXT NOT NULL DEFAULT ''");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_cards_task_number ON cards(board_id, task_number);`);
 ensureColumn('users', 'avatar_data', "avatar_data TEXT NOT NULL DEFAULT ''");
 ensureColumn('lists', 'owner_user_id', 'owner_user_id TEXT');
 ensureColumn('lists', 'color', "color TEXT NOT NULL DEFAULT ''");
@@ -220,6 +223,57 @@ const selectBoardById = db.prepare(`SELECT * FROM boards WHERE id = ?`);
 const selectBoardMembership = db.prepare(`SELECT * FROM board_members WHERE board_id = ? AND user_id = ?`);
 const selectListById = db.prepare(`SELECT * FROM lists WHERE id = ?`);
 const selectCardById = db.prepare(`SELECT * FROM cards WHERE id = ?`);
+
+function taskNumberPrefix(board) {
+  const fromEnv = String(process.env.TASK_NUMBER_PREFIX || '').trim();
+  const raw = fromEnv || 'CDT';
+  const cleaned = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+  return cleaned || 'TASK';
+}
+
+function formatTaskNumber(board, sequence) {
+  return `${taskNumberPrefix(board)}-${String(sequence).padStart(2, '0')}`;
+}
+
+function nextTaskNumber(boardId) {
+  const board = selectBoardById.get(boardId);
+  const prefix = taskNumberPrefix(board);
+  const rows = db.prepare(`SELECT task_number FROM cards WHERE board_id = ? AND task_number LIKE ?`).all(boardId, `${prefix}-%`);
+  const maxSequence = rows.reduce((max, row) => {
+    const match = String(row.task_number || '').match(new RegExp(`^${prefix}-(\\d+)$`));
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return formatTaskNumber(board, maxSequence + 1);
+}
+
+function backfillTaskNumbers() {
+  const boards = db.prepare(`SELECT * FROM boards`).all();
+  const update = db.prepare(`UPDATE cards SET task_number = ? WHERE id = ?`);
+  for (const board of boards) {
+    const prefix = taskNumberPrefix(board);
+    const cards = db.prepare(`SELECT id, task_number FROM cards WHERE board_id = ? ORDER BY created_at ASC, rowid ASC`).all(board.id);
+    let sequence = 0;
+    const used = new Set();
+    for (const card of cards) {
+      const existing = String(card.task_number || '').trim().toUpperCase();
+      const match = existing.match(new RegExp(`^${prefix}-(\\d+)$`));
+      if (match) {
+        sequence = Math.max(sequence, Number(match[1]));
+        used.add(existing);
+        continue;
+      }
+      let next;
+      do {
+        sequence += 1;
+        next = formatTaskNumber(board, sequence);
+      } while (used.has(next));
+      used.add(next);
+      update.run(next, card.id);
+    }
+  }
+}
+
+backfillTaskNumbers();
 
 function uid() {
   return crypto.randomUUID();
@@ -500,6 +554,7 @@ function serializeList(list) {
 function serializeCard(card) {
   return {
     id: card.id,
+    taskNumber: card.task_number || '',
     boardId: card.board_id,
     listId: card.list_id,
     title: card.title,
@@ -1117,11 +1172,12 @@ async function handleApi(req, res, pathname, query) {
     if (!canManageList(check, list, current.user.id)) return sendJson(res, 403, { error: 'You can only create cards in your own list' });
     const maxPositionRow = db.prepare(`SELECT COALESCE(MAX(position), -1) AS max_position FROM cards WHERE list_id = ?`).get(listId);
     const cardId = uid();
+    const taskNumber = nextTaskNumber(boardId);
     db.prepare(`
-      INSERT INTO cards (id, board_id, list_id, title, position, is_completed, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(cardId, boardId, listId, title, maxPositionRow.max_position + 1, 0, current.user.id);
-    logActivity({ workspaceId: check.workspace.id, boardId, cardId, actorUserId: current.user.id, actionType: 'card.created', details: { title } });
+      INSERT INTO cards (id, task_number, board_id, list_id, title, position, is_completed, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(cardId, taskNumber, boardId, listId, title, maxPositionRow.max_position + 1, 0, current.user.id);
+    logActivity({ workspaceId: check.workspace.id, boardId, cardId, actorUserId: current.user.id, actionType: 'card.created', details: { title, taskNumber } });
     broadcast({ type: 'board.updated', workspaceId: check.workspace.id, boardId, userId: current.user.id });
     return sendJson(res, 201, getCardDetail(cardId));
   }
