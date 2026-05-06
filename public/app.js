@@ -437,7 +437,26 @@ Object.assign(messages.uz, {
   themeDark: "Qorong'u",
   listColor: "List rangi",
   confirmListColor: "List rangini hamma foydalanuvchilarga ko‘rinadigan qilib saqlaysizmi?",
-  listColorUpdated: "List rangi hammaga saqlandi"
+  listColorUpdated: "List rangi hammaga saqlandi",
+  adminReport: "Admin ma’lumotnomalar",
+  adminUsers: "Foydalanuvchilar sahifalari",
+  reportFor: "Ma’lumotnoma",
+  chooseUserReport: "Foydalanuvchini tanlang",
+  downloadDocx: "DOCX yuklab olish",
+  assignedTasks: "Topshiriqlar",
+  completedTasks: "Bajarilgan",
+  openTasks: "Jarayonda",
+  reportBoard: "Board",
+  reportList: "List",
+  reportCard: "Card",
+  reportTask: "Qo‘yilgan topshiriq",
+  reportStatus: "Bajarilganligi",
+  reportDateTime: "Sana / vaqt",
+  reportIssuedTo: "Kimga berilgan",
+  reportGenerated: "Berilgan sana va vaqt",
+  noReportTasks: "Topshiriqlar topilmadi",
+  viewDetails: "Ko‘rish",
+  adminOnlyHint: "Bu bo‘lim faqat board admini yoki egasi uchun."
 });
 Object.assign(messages.ru, {
   profile: "Профиль",
@@ -490,7 +509,26 @@ Object.assign(messages.ru, {
   themeDark: "Тёмная",
   listColor: "Цвет list",
   confirmListColor: "Сохранить цвет list так, чтобы он был виден всем участникам?",
-  listColorUpdated: "Цвет list сохранён для всех"
+  listColorUpdated: "Цвет list сохранён для всех",
+  adminReport: "Admin справки",
+  adminUsers: "Личные страницы пользователей",
+  reportFor: "Справка",
+  chooseUserReport: "Выберите пользователя",
+  downloadDocx: "Скачать DOCX",
+  assignedTasks: "Задачи",
+  completedTasks: "Выполнено",
+  openTasks: "В работе",
+  reportBoard: "Board",
+  reportList: "List",
+  reportCard: "Card",
+  reportTask: "Поставленная задача",
+  reportStatus: "Выполнение",
+  reportDateTime: "Дата / время",
+  reportIssuedTo: "Кому выдано",
+  reportGenerated: "Дата и время выдачи",
+  noReportTasks: "Задачи не найдены",
+  viewDetails: "Открыть",
+  adminOnlyHint: "Раздел доступен только admin или владельцу board."
 });
 Object.assign(messages.en, {
   profile: "Profile",
@@ -543,7 +581,26 @@ Object.assign(messages.en, {
   themeDark: "Dark",
   listColor: "List color",
   confirmListColor: "Save this list color so every participant can see it?",
-  listColorUpdated: "List color saved for everyone"
+  listColorUpdated: "List color saved for everyone",
+  adminReport: "Admin reports",
+  adminUsers: "User personal pages",
+  reportFor: "Report",
+  chooseUserReport: "Choose a user",
+  downloadDocx: "Download DOCX",
+  assignedTasks: "Tasks",
+  completedTasks: "Completed",
+  openTasks: "Open",
+  reportBoard: "Board",
+  reportList: "List",
+  reportCard: "Card",
+  reportTask: "Assigned task",
+  reportStatus: "Completion",
+  reportDateTime: "Date / time",
+  reportIssuedTo: "Issued to",
+  reportGenerated: "Generated date and time",
+  noReportTasks: "No tasks found",
+  viewDetails: "Open",
+  adminOnlyHint: "This section is only for board admin or owner."
 });
 
 const state = {
@@ -552,6 +609,8 @@ const state = {
   authMode: 'login',
   board: null,
   boardId: null,
+  adminReportAvailable: false,
+  adminReport: null,
   cardDetail: null,
   filters: {
     search: '',
@@ -811,6 +870,9 @@ function currentRoute() {
   if (membersMatch) return { name: 'board-members', boardId: decodeRoutePart(membersMatch[1]) };
   const settingsMatch = hash.match(/^#\/board\/([^/]+)\/settings$/);
   if (settingsMatch) return { name: 'board-settings', boardId: decodeRoutePart(settingsMatch[1]) };
+  const adminUserMatch = hash.match(/^#\/admin\/users\/([^/]+)$/);
+  if (adminUserMatch) return { name: 'admin-users', userId: decodeRoutePart(adminUserMatch[1]) };
+  if (hash === '#/admin/users') return { name: 'admin-users' };
   const cardMatch = hash.match(/^#\/board\/([^/]+)\/([^/]+)$/);
   if (cardMatch) return { name: 'board', boardId: decodeRoutePart(cardMatch[1]), cardNumber: decodeRoutePart(cardMatch[2]) };
   const match = hash.match(/^#\/board\/([^/]+)$/);
@@ -855,6 +917,7 @@ function renderTopbar(title, rightHtml = '') {
       <div class="row wrap-row topbar-actions">
         ${renderLanguageBar()}
         <button id="theme-toggle" class="ghost small theme-toggle" type="button" title="${t('theme')}">${themeButtonLabel()}</button>
+        ${state.user && state.adminReportAvailable ? `<button id="go-admin-users" class="ghost small">${t('adminReport')}</button>` : ''}
         ${state.user ? `<button id="go-profile" class="ghost small">${t('openProfile')}</button>` : ''}
         ${state.user ? `<div class="member-pill">${renderAvatar(state.user)}<div>${escapeHtml(state.user.name)}</div></div>` : ''}
         ${rightHtml}
@@ -882,6 +945,13 @@ function bindTopbarCommonActions() {
     });
   }
 
+  const adminBtn = document.getElementById('go-admin-users');
+  if (adminBtn) {
+    adminBtn.addEventListener('click', () => {
+      location.hash = '#/admin/users';
+    });
+  }
+
   const profileBtn = document.getElementById('go-profile');
   if (profileBtn) {
     profileBtn.addEventListener('click', () => {
@@ -897,6 +967,8 @@ async function logoutUser() {
   state.board = null;
   state.boardId = null;
   state.profile = null;
+  state.adminReport = null;
+  state.adminReportAvailable = false;
   if (state.sse) state.sse.close();
   location.hash = '#/';
   render();
@@ -1135,12 +1207,14 @@ async function refreshDashboard() {
   const data = await api('/api/dashboard');
   state.user = data.user;
   state.workspaces = data.workspaces || [];
+  state.adminReportAvailable = Boolean(data.adminReportAvailable);
 }
 
 async function loadMe() {
   const data = await api('/api/auth/me');
   state.user = data.user;
   state.workspaces = data.workspaces || [];
+  state.adminReportAvailable = Boolean(data.adminReportAvailable);
 }
 
 async function loadProfile() {
@@ -1153,6 +1227,15 @@ async function loadBoard(boardId, rerender = true) {
   state.board = await api(`/api/boards/${boardId}`);
   connectBoardEvents();
   if (rerender) render();
+}
+
+async function loadAdminUsers(userId = '') {
+  const data = await api('/api/admin/users');
+  state.adminReportAvailable = true;
+  state.adminReport = { ...data, detail: null };
+  if (userId) {
+    state.adminReport.detail = await api(`/api/admin/users/${encodeURIComponent(userId)}`);
+  }
 }
 
 async function openCard(cardId, options = {}) {
@@ -1230,6 +1313,7 @@ function renderAuth() {
       const data = await api(state.authMode === 'login' ? '/api/auth/login' : '/api/auth/register', { method: 'POST', body: payload });
       state.user = data.user;
       state.workspaces = data.workspaces || [];
+      state.adminReportAvailable = Boolean(data.adminReportAvailable);
       location.hash = '#/';
       render();
       showToast(state.authMode === 'login' ? t('loginSuccess') : t('registerSuccess'));
@@ -1307,6 +1391,8 @@ function renderDashboard() {
     state.workspaces = [];
     state.board = null;
     state.boardId = null;
+    state.adminReport = null;
+    state.adminReportAvailable = false;
     if (state.sse) state.sse.close();
     location.hash = '#/';
     render();
@@ -1381,6 +1467,110 @@ function renderDashboard() {
   document.querySelectorAll('[data-open-board]').forEach((btn) => {
     btn.addEventListener('click', () => {
       location.hash = `#/board/${btn.dataset.openBoard}`;
+    });
+  });
+}
+
+
+function renderAdminUsers() {
+  const report = state.adminReport || { users: [], boards: [] };
+  const detail = report.detail || null;
+  const generated = detail ? `${detail.generatedDate} ${detail.generatedTime}` : '';
+  app.innerHTML = `
+    <div class="app-shell">
+      ${renderTopbar(t('adminReport'), `<button id="logout-btn" class="ghost">${t('logout')}</button>`)}
+      <div class="page">
+        <div class="section-head">
+          <div>
+            <h2>${t('adminUsers')}</h2>
+            <div class="helper">${t('adminOnlyHint')}</div>
+          </div>
+          <button id="go-dashboard" class="ghost">${t('back')}</button>
+        </div>
+        <div class="workspace-grid admin-report-grid">
+          <div class="card panel admin-users-panel">
+            <div class="section-head"><h3>${t('participants')}</h3></div>
+            <div class="report-user-list">
+              ${(report.users || []).length ? report.users.map((user) => `
+                <button class="report-user-row ${detail?.targetUser?.id === user.id ? 'active' : ''}" data-open-report-user="${user.id}">
+                  <div class="row">
+                    ${renderAvatar(user)}
+                    <div class="report-user-main">
+                      <div class="member-name">${escapeHtml(user.name)}</div>
+                      <div class="helper">${escapeHtml(user.email)}</div>
+                    </div>
+                  </div>
+                  <div class="report-user-stats">
+                    <span class="badge">${t('assignedTasks')}: ${user.summary?.total || 0}</span>
+                    <span class="badge status-done">${t('completedTasks')}: ${user.summary?.completed || 0}</span>
+                    <span class="badge status-open">${t('openTasks')}: ${user.summary?.open || 0}</span>
+                  </div>
+                </button>
+              `).join('') : `<div class="empty-state">${t('noMembers')}</div>`}
+            </div>
+          </div>
+
+          <div class="card panel admin-detail-panel">
+            ${detail ? `
+              <div class="section-head">
+                <div>
+                  <h3>${t('reportFor')}: ${escapeHtml(detail.targetUser.name)}</h3>
+                  <div class="helper">${t('reportIssuedTo')}: ${escapeHtml(detail.targetUser.email)} · ${t('reportGenerated')}: ${escapeHtml(generated)}</div>
+                </div>
+                <a class="primary small download-link" href="/api/admin/users/${encodeURIComponent(detail.targetUser.id)}/report.docx">${t('downloadDocx')}</a>
+              </div>
+              <div class="stats-grid report-stats">
+                <div class="stat-card"><div class="helper">${t('assignedTasks')}</div><div class="stat-value">${detail.summary.total}</div></div>
+                <div class="stat-card"><div class="helper">${t('completedTasks')}</div><div class="stat-value">${detail.summary.completed}</div></div>
+                <div class="stat-card"><div class="helper">${t('openTasks')}</div><div class="stat-value">${detail.summary.open}</div></div>
+              </div>
+              <div class="report-table-wrap">
+                <table class="report-table">
+                  <thead>
+                    <tr>
+                      <th>№</th>
+                      <th>${t('reportBoard')}</th>
+                      <th>${t('reportList')}</th>
+                      <th>${t('reportCard')}</th>
+                      <th>${t('reportTask')}</th>
+                      <th>${t('reportStatus')}</th>
+                      <th>${t('reportDateTime')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${detail.items.length ? detail.items.map((item) => `
+                      <tr>
+                        <td>${item.number}</td>
+                        <td>${escapeHtml(item.boardName)}</td>
+                        <td>${escapeHtml(item.listName)}</td>
+                        <td>${escapeHtml(item.taskNumber || '-')}</td>
+                        <td>
+                          <div class="report-task-title">${escapeHtml(item.title)}</div>
+                          ${item.description ? `<div class="helper">${escapeHtml(item.description)}</div>` : ''}
+                        </td>
+                        <td><span class="badge ${item.isCompleted ? 'status-done' : 'status-open'}">${escapeHtml(item.statusText)}</span></td>
+                        <td>${escapeHtml(item.isCompleted ? item.updatedAtText : item.createdAtText)}</td>
+                      </tr>
+                    `).join('') : `<tr><td colspan="7" class="empty-cell">${t('noReportTasks')}</td></tr>`}
+                  </tbody>
+                </table>
+              </div>
+            ` : `
+              <div class="empty-state large-empty">${t('chooseUserReport')}</div>
+            `}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  bindLanguageBar();
+  bindTopbarCommonActions();
+  document.getElementById('logout-btn').addEventListener('click', logoutUser);
+  document.getElementById('go-dashboard').addEventListener('click', () => { location.hash = '#/'; });
+  document.querySelectorAll('[data-open-report-user]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      location.hash = `#/admin/users/${encodeURIComponent(btn.dataset.openReportUser)}`;
     });
   });
 }
@@ -1802,6 +1992,8 @@ function renderBoard() {
     state.workspaces = [];
     state.board = null;
     state.boardId = null;
+    state.adminReport = null;
+    state.adminReportAvailable = false;
     if (state.sse) state.sse.close();
     location.hash = '#/';
     render();
@@ -2438,6 +2630,7 @@ function render() {
   else if (route.name === 'board-members') renderBoardMembers();
   else if (route.name === 'board-activity') renderBoardActivity();
   else if (route.name === 'board-settings') renderBoardSettings();
+  else if (route.name === 'admin-users') renderAdminUsers();
   else if (route.name === 'profile') renderProfile();
   else renderDashboard();
   renderModal();
@@ -2476,6 +2669,14 @@ async function handleRouteChange() {
         showToast(error.message);
       }
     }
+    if (route.name === 'admin-users') {
+      try {
+        await loadAdminUsers(route.userId || '');
+      } catch (error) {
+        showToast(error.message);
+        location.hash = '#/';
+      }
+    }
   }
   render();
 }
@@ -2495,6 +2696,13 @@ async function boot() {
     if (state.user && route.name === 'profile') {
       try {
         await loadProfile();
+      } catch {
+        location.hash = '#/';
+      }
+    }
+    if (state.user && route.name === 'admin-users') {
+      try {
+        await loadAdminUsers(route.userId || '');
       } catch {
         location.hash = '#/';
       }

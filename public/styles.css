@@ -1185,3 +1185,88 @@ html[data-theme="light"] .list-header {
 html[data-theme="light"] .list-body {
   background: color-mix(in srgb, var(--list-accent, var(--accent)) 9%, #ffffff);
 }
+
+/* Admin user reports */
+.admin-report-grid {
+  grid-template-columns: minmax(280px, 0.9fr) minmax(420px, 1.8fr);
+  align-items: start;
+}
+.report-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.report-user-row {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--text);
+  border-radius: 18px;
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.report-user-row:hover,
+.report-user-row.active {
+  border-color: rgba(59, 130, 246, 0.55);
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.20);
+  transform: translateY(-1px);
+}
+.report-user-main {
+  min-width: 0;
+}
+.report-user-stats,
+.report-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.download-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.report-table-wrap {
+  margin-top: 14px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+}
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+}
+.report-table th,
+.report-table td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  text-align: left;
+}
+.report-table th {
+  color: var(--muted);
+  background: rgba(148, 163, 184, 0.10);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.report-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.report-task-title {
+  font-weight: 700;
+}
+.empty-cell {
+  text-align: center !important;
+  color: var(--muted);
+}
+@media (max-width: 900px) {
+  .admin-report-grid {
+    grid-template-columns: 1fr;
+  }
+}

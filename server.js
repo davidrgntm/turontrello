@@ -338,6 +338,16 @@ function sendText(res, status, text, contentType = 'text/plain; charset=utf-8') 
   res.end(text);
 }
 
+function sendBuffer(res, status, buffer, contentType, extraHeaders = {}) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Content-Length': buffer.length,
+    'Cache-Control': 'no-store',
+    ...extraHeaders
+  });
+  res.end(buffer);
+}
+
 function notFound(res) {
   sendJson(res, 404, { error: 'Not found' });
 }
@@ -713,6 +723,372 @@ function getCardDetail(cardId) {
   };
 }
 
+
+function hasAdminReportAccess(userId) {
+  return getAdminBoardsForUser(userId).length > 0;
+}
+
+function getAdminBoardsForUser(userId) {
+  return db.prepare(`
+    SELECT DISTINCT b.*, w.name AS workspace_name
+    FROM boards b
+    JOIN workspaces w ON w.id = b.workspace_id
+    LEFT JOIN workspace_members wm ON wm.workspace_id = b.workspace_id AND wm.user_id = ?
+    LEFT JOIN board_members bm ON bm.board_id = b.id AND bm.user_id = ?
+    WHERE b.owner_id = ?
+       OR w.owner_id = ?
+       OR wm.role = 'owner'
+       OR bm.role IN ('owner', 'admin')
+    ORDER BY w.name COLLATE NOCASE, b.name COLLATE NOCASE
+  `).all(userId, userId, userId, userId);
+}
+
+function requireAdminReportAccess(res, userId) {
+  const boards = getAdminBoardsForUser(userId);
+  if (!boards.length) {
+    sendJson(res, 403, { error: 'Only board admin or owner can open reports' });
+    return null;
+  }
+  return boards;
+}
+
+function inPlaceholders(values) {
+  return values.map(() => '?').join(',');
+}
+
+function normalizeSqlDate(value) {
+  if (!value) return null;
+  const text = String(value);
+  return text.includes('T') ? text : text.replace(' ', 'T') + 'Z';
+}
+
+function tashkentParts(value = new Date()) {
+  const source = value instanceof Date ? value : new Date(normalizeSqlDate(value) || value);
+  const date = Number.isNaN(source.getTime()) ? new Date() : source;
+  const shifted = new Date(date.getTime() + 5 * 60 * 60 * 1000);
+  const pad = (n) => String(n).padStart(2, '0');
+  return {
+    date: `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())}`,
+    time: `${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`,
+    full: `${shifted.getUTCFullYear()}-${pad(shifted.getUTCMonth() + 1)}-${pad(shifted.getUTCDate())} ${pad(shifted.getUTCHours())}:${pad(shifted.getUTCMinutes())}`
+  };
+}
+
+function escapeXml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function safeFilename(value, fallback = 'report') {
+  const cleaned = String(value || fallback).replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 80);
+  return cleaned || fallback;
+}
+
+function getUserAdminReportData(currentUserId, targetUserId, adminBoards = null) {
+  const boards = adminBoards || getAdminBoardsForUser(currentUserId);
+  if (!boards.length) throw new Error('Only board admin or owner can open reports');
+
+  const targetUser = selectUserById.get(targetUserId);
+  if (!targetUser) throw new Error('User not found');
+
+  const boardIds = boards.map((board) => board.id);
+  const placeholders = inPlaceholders(boardIds);
+  const visibleMembership = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM board_members
+    WHERE user_id = ? AND board_id IN (${placeholders})
+  `).get(targetUserId, ...boardIds).count;
+
+  if (!visibleMembership) throw new Error('User not found in your admin boards');
+
+  const rows = db.prepare(`
+    SELECT
+      c.*,
+      b.name AS board_name,
+      w.name AS workspace_name,
+      l.name AS list_name,
+      l.owner_user_id AS list_owner_user_id,
+      lu.name AS list_owner_name,
+      au.name AS assignee_name,
+      au.email AS assignee_email,
+      cu.name AS created_by_name,
+      cu.email AS created_by_email
+    FROM cards c
+    JOIN boards b ON b.id = c.board_id
+    JOIN workspaces w ON w.id = b.workspace_id
+    JOIN lists l ON l.id = c.list_id
+    LEFT JOIN users lu ON lu.id = l.owner_user_id
+    LEFT JOIN users au ON au.id = c.assignee_user_id
+    LEFT JOIN users cu ON cu.id = c.created_by
+    WHERE c.archived = 0
+      AND c.board_id IN (${placeholders})
+      AND (
+        c.assignee_user_id = ?
+        OR l.owner_user_id = ?
+        OR c.created_by = ?
+      )
+    ORDER BY b.name COLLATE NOCASE, l.position ASC, c.position ASC, c.created_at ASC
+  `).all(...boardIds, targetUserId, targetUserId, targetUserId);
+
+  const items = rows.map((row, index) => {
+    const updated = tashkentParts(row.updated_at || row.created_at);
+    const created = tashkentParts(row.created_at);
+    return {
+      number: index + 1,
+      workspaceId: row.workspace_id,
+      workspaceName: row.workspace_name,
+      boardId: row.board_id,
+      boardName: row.board_name,
+      listId: row.list_id,
+      listName: row.list_name,
+      taskNumber: row.task_number || '',
+      title: row.title,
+      description: row.description || '',
+      assigneeName: row.assignee_name || '',
+      assigneeEmail: row.assignee_email || '',
+      listOwnerName: row.list_owner_name || '',
+      createdByName: row.created_by_name || '',
+      createdByEmail: row.created_by_email || '',
+      createdAt: row.created_at,
+      createdAtText: created.full,
+      updatedAt: row.updated_at,
+      updatedAtText: updated.full,
+      isCompleted: Boolean(row.is_completed),
+      statusText: row.is_completed ? 'Bajarilgan' : 'Jarayonda'
+    };
+  });
+
+  const completed = items.filter((item) => item.isCompleted).length;
+  const generated = tashkentParts(new Date());
+  return {
+    generatedAt: new Date().toISOString(),
+    generatedDate: generated.date,
+    generatedTime: generated.time,
+    issuedBy: publicUser(selectUserById.get(currentUserId)),
+    targetUser: publicUser(targetUser),
+    boards: boards.map((board) => ({ id: board.id, name: board.name, workspaceName: board.workspace_name })),
+    summary: {
+      total: items.length,
+      completed,
+      open: items.length - completed,
+      boardsCount: new Set(items.map((item) => item.boardId)).size,
+      listsCount: new Set(items.map((item) => item.listId)).size
+    },
+    items
+  };
+}
+
+function getAdminUsersReport(currentUserId) {
+  const boards = getAdminBoardsForUser(currentUserId);
+  if (!boards.length) throw new Error('Only board admin or owner can open reports');
+  const boardIds = boards.map((board) => board.id);
+  const placeholders = inPlaceholders(boardIds);
+  const users = db.prepare(`
+    SELECT DISTINCT u.*
+    FROM users u
+    JOIN board_members bm ON bm.user_id = u.id
+    WHERE bm.board_id IN (${placeholders})
+    ORDER BY u.name COLLATE NOCASE, u.email COLLATE NOCASE
+  `).all(...boardIds).map((row) => {
+    const detail = getUserAdminReportData(currentUserId, row.id, boards);
+    return {
+      ...publicUser(row),
+      summary: detail.summary
+    };
+  });
+  return {
+    adminReportAvailable: true,
+    generatedAt: new Date().toISOString(),
+    boards: boards.map((board) => ({ id: board.id, name: board.name, workspaceName: board.workspace_name })),
+    users
+  };
+}
+
+function makeDocxParagraph(text, options = {}) {
+  const align = options.align ? `<w:jc w:val="${options.align}"/>` : '';
+  const spacing = `<w:spacing w:after="${options.after ?? 120}"/>`;
+  const pPr = `<w:pPr>${align}${spacing}</w:pPr>`;
+  const runProps = [
+    options.bold ? '<w:b/>' : '',
+    options.size ? `<w:sz w:val="${options.size}"/>` : '',
+    options.color ? `<w:color w:val="${options.color}"/>` : ''
+  ].join('');
+  return `<w:p>${pPr}<w:r>${runProps ? `<w:rPr>${runProps}</w:rPr>` : ''}<w:t xml:space="preserve">${escapeXml(text)}</w:t></w:r></w:p>`;
+}
+
+function makeDocxCell(text, options = {}) {
+  const width = options.width || 1800;
+  const shade = options.shade ? `<w:shd w:fill="${options.shade}"/>` : '';
+  const vAlign = '<w:vAlign w:val="center"/>';
+  return `<w:tc><w:tcPr><w:tcW w:w="${width}" w:type="dxa"/>${shade}${vAlign}</w:tcPr>${makeDocxParagraph(text, { bold: options.bold, size: options.size || 18, after: 40 })}</w:tc>`;
+}
+
+function makeDocxRow(cells, options = {}) {
+  return `<w:tr>${cells.map((cell) => makeDocxCell(cell.text, { ...cell, shade: options.header ? 'E2E8F0' : cell.shade, bold: options.header || cell.bold })).join('')}</w:tr>`;
+}
+
+function makeReportDocumentXml(report) {
+  const tableRows = [
+    makeDocxRow([
+      { text: '№', width: 500 },
+      { text: 'Board', width: 1600 },
+      { text: 'List', width: 1600 },
+      { text: 'Card', width: 1400 },
+      { text: 'Qo‘yilgan topshiriq', width: 2600 },
+      { text: 'Bajarilganligi', width: 1300 },
+      { text: 'Sana / vaqt', width: 1500 }
+    ], { header: true }),
+    ...(report.items.length ? report.items.map((item) => makeDocxRow([
+      { text: String(item.number), width: 500 },
+      { text: item.boardName, width: 1600 },
+      { text: item.listName, width: 1600 },
+      { text: item.taskNumber || item.title, width: 1400 },
+      { text: item.title + (item.description ? `\n${item.description}` : ''), width: 2600 },
+      { text: item.statusText, width: 1300, bold: item.isCompleted },
+      { text: item.isCompleted ? item.updatedAtText : item.createdAtText, width: 1500 }
+    ])) : [makeDocxRow([
+      { text: '-', width: 500 },
+      { text: '-', width: 1600 },
+      { text: '-', width: 1600 },
+      { text: '-', width: 1400 },
+      { text: 'Ushbu foydalanuvchi bo‘yicha topshiriqlar topilmadi', width: 2600 },
+      { text: '-', width: 1300 },
+      { text: `${report.generatedDate} ${report.generatedTime}`, width: 1500 }
+    ])])
+  ].join('');
+
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:body>
+    ${makeDocxParagraph("MA'LUMOTNOMA", { align: 'center', bold: true, size: 34, after: 260 })}
+    ${makeDocxParagraph(`Kimga berilgan: ${report.targetUser.name} (${report.targetUser.email})`, { bold: true, size: 24 })}
+    ${makeDocxParagraph(`Berilgan sana: ${report.generatedDate}`, { size: 22 })}
+    ${makeDocxParagraph(`Berilgan vaqt: ${report.generatedTime}`, { size: 22 })}
+    ${makeDocxParagraph(`Ma’lumotnomani tayyorlagan: ${report.issuedBy?.name || ''} (${report.issuedBy?.email || ''})`, { size: 22, after: 240 })}
+    ${makeDocxParagraph(`Jami topshiriqlar: ${report.summary.total}. Bajarilgan: ${report.summary.completed}. Jarayonda: ${report.summary.open}.`, { bold: true, size: 22, after: 240 })}
+    ${makeDocxParagraph('Qo‘yilgan topshiriqlar va ularning bajarilganligi:', { bold: true, size: 24, after: 120 })}
+    <w:tbl>
+      <w:tblPr>
+        <w:tblW w:w="10000" w:type="dxa"/>
+        <w:tblBorders>
+          <w:top w:val="single" w:sz="6" w:space="0" w:color="94A3B8"/>
+          <w:left w:val="single" w:sz="6" w:space="0" w:color="94A3B8"/>
+          <w:bottom w:val="single" w:sz="6" w:space="0" w:color="94A3B8"/>
+          <w:right w:val="single" w:sz="6" w:space="0" w:color="94A3B8"/>
+          <w:insideH w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+          <w:insideV w:val="single" w:sz="6" w:space="0" w:color="CBD5E1"/>
+        </w:tblBorders>
+      </w:tblPr>
+      ${tableRows}
+    </w:tbl>
+    ${makeDocxParagraph('Izoh: “Bajarilgan” statusi card ichidagi bajarilganlik belgisi asosida ko‘rsatildi. Sana/vaqt Tashkent vaqti bo‘yicha chiqarildi.', { size: 18, after: 120 })}
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="850" w:bottom="1134" w:left="850" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr>
+  </w:body>
+</w:document>`;
+}
+
+const crc32Table = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let k = 0; k < 8; k += 1) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = crc32Table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(date = new Date()) {
+  const year = Math.max(1980, date.getFullYear());
+  const dosTime = (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2);
+  const dosDate = ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate();
+  return { dosTime, dosDate };
+}
+
+function createZip(entries) {
+  const files = [];
+  const central = [];
+  let offset = 0;
+  const { dosTime, dosDate } = dosDateTime(new Date());
+
+  for (const entry of entries) {
+    const nameBuffer = Buffer.from(entry.name, 'utf8');
+    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(String(entry.data), 'utf8');
+    const crc = crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(dosTime, 10);
+    local.writeUInt16LE(dosDate, 12);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(nameBuffer.length, 26);
+    local.writeUInt16LE(0, 28);
+    files.push(local, nameBuffer, data);
+
+    const cdir = Buffer.alloc(46);
+    cdir.writeUInt32LE(0x02014b50, 0);
+    cdir.writeUInt16LE(20, 4);
+    cdir.writeUInt16LE(20, 6);
+    cdir.writeUInt16LE(0, 8);
+    cdir.writeUInt16LE(0, 10);
+    cdir.writeUInt16LE(dosTime, 12);
+    cdir.writeUInt16LE(dosDate, 14);
+    cdir.writeUInt32LE(crc, 16);
+    cdir.writeUInt32LE(data.length, 20);
+    cdir.writeUInt32LE(data.length, 24);
+    cdir.writeUInt16LE(nameBuffer.length, 28);
+    cdir.writeUInt16LE(0, 30);
+    cdir.writeUInt16LE(0, 32);
+    cdir.writeUInt16LE(0, 34);
+    cdir.writeUInt16LE(0, 36);
+    cdir.writeUInt32LE(0, 38);
+    cdir.writeUInt32LE(offset, 42);
+    central.push(cdir, nameBuffer);
+    offset += local.length + nameBuffer.length + data.length;
+  }
+
+  const centralSize = central.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...files, ...central, end]);
+}
+
+function createReportDocx(report) {
+  const documentXml = makeReportDocumentXml(report);
+  return createZip([
+    { name: '[Content_Types].xml', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+</Types>` },
+    { name: '_rels/.rels', data: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+</Relationships>` },
+    { name: 'word/document.xml', data: documentXml }
+  ]);
+}
+
 function ensurePersonalListForUser(boardId, userId) {
   const existing = db.prepare(`SELECT * FROM lists WHERE board_id = ? AND owner_user_id = ? LIMIT 1`).get(boardId, userId);
   if (existing) return existing;
@@ -830,7 +1206,7 @@ async function handleApi(req, res, pathname, query) {
     const sessionId = uid();
     insertSession.run(sessionId, id, plusDays(SESSION_DAYS));
     setCookie(res, 'tt_session', sessionId, { maxAge: SESSION_DAYS * 24 * 60 * 60 });
-    return sendJson(res, 201, { user: publicUser(selectUserById.get(id)), workspaces: getWorkspaceOverview(id) });
+    return sendJson(res, 201, { user: publicUser(selectUserById.get(id)), workspaces: getWorkspaceOverview(id), adminReportAvailable: hasAdminReportAccess(id) });
   }
 
   if (pathname === '/api/auth/login' && req.method === 'POST') {
@@ -842,7 +1218,7 @@ async function handleApi(req, res, pathname, query) {
     const sessionId = uid();
     insertSession.run(sessionId, user.id, plusDays(SESSION_DAYS));
     setCookie(res, 'tt_session', sessionId, { maxAge: SESSION_DAYS * 24 * 60 * 60 });
-    return sendJson(res, 200, { user: publicUser(user), workspaces: getWorkspaceOverview(user.id) });
+    return sendJson(res, 200, { user: publicUser(user), workspaces: getWorkspaceOverview(user.id), adminReportAvailable: hasAdminReportAccess(user.id) });
   }
 
   if (pathname === '/api/auth/logout' && req.method === 'POST') {
@@ -855,7 +1231,7 @@ async function handleApi(req, res, pathname, query) {
   if (pathname === '/api/auth/me' && req.method === 'GET') {
     const current = getCurrentUser(req);
     if (!current) return sendJson(res, 200, { user: null });
-    return sendJson(res, 200, { user: current.user, workspaces: getWorkspaceOverview(current.user.id) });
+    return sendJson(res, 200, { user: current.user, workspaces: getWorkspaceOverview(current.user.id), adminReportAvailable: hasAdminReportAccess(current.user.id) });
   }
 
   const current = requireUser(req, res);
@@ -881,12 +1257,37 @@ async function handleApi(req, res, pathname, query) {
     return sendJson(res, 200, { user: publicUser(selectUserById.get(current.user.id)) });
   }
 
+  if (pathname === '/api/admin/users' && req.method === 'GET') {
+    requireAdminReportAccess(res, current.user.id);
+    if (res.headersSent) return;
+    return sendJson(res, 200, getAdminUsersReport(current.user.id));
+  }
+
+  const adminUserMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+  if (adminUserMatch && req.method === 'GET') {
+    requireAdminReportAccess(res, current.user.id);
+    if (res.headersSent) return;
+    return sendJson(res, 200, getUserAdminReportData(current.user.id, adminUserMatch[1]));
+  }
+
+  const adminUserDocxMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/report\.docx$/);
+  if (adminUserDocxMatch && req.method === 'GET') {
+    requireAdminReportAccess(res, current.user.id);
+    if (res.headersSent) return;
+    const report = getUserAdminReportData(current.user.id, adminUserDocxMatch[1]);
+    const buffer = createReportDocx(report);
+    const filename = safeFilename(`malumotnoma_${report.targetUser.name}_${report.generatedDate}`, 'malumotnoma');
+    return sendBuffer(res, 200, buffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', {
+      'Content-Disposition': `attachment; filename="${filename}.docx"`
+    });
+  }
+
   if (pathname === '/api/events' && req.method === 'GET') {
     return handleSse(req, res, current, query);
   }
 
   if (pathname === '/api/dashboard' && req.method === 'GET') {
-    return sendJson(res, 200, { user: current.user, workspaces: getWorkspaceOverview(current.user.id) });
+    return sendJson(res, 200, { user: current.user, workspaces: getWorkspaceOverview(current.user.id), adminReportAvailable: hasAdminReportAccess(current.user.id) });
   }
 
   if (pathname === '/api/workspaces' && req.method === 'POST') {
